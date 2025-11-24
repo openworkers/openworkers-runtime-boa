@@ -3,11 +3,14 @@ use crate::runtime::TokioJobQueue;
 use crate::task::{HttpResponse, Task};
 use boa_engine::{Context, Source, context::ContextBuilder};
 use bytes::Bytes;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub struct Worker {
     context: Context,
     job_queue: Rc<TokioJobQueue>,
+    /// Sender for fetch response (set during fetch execution)
+    fetch_response_tx: Rc<RefCell<Option<tokio::sync::oneshot::Sender<String>>>>,
 }
 
 impl Worker {
@@ -18,6 +21,8 @@ impl Worker {
         _limits: Option<crate::compat::RuntimeLimits>,
     ) -> Result<Self, String> {
         let job_queue = TokioJobQueue::new();
+        let fetch_response_tx: Rc<RefCell<Option<tokio::sync::oneshot::Sender<String>>>> =
+            Rc::new(RefCell::new(None));
 
         // Create context with our job executor
         let context = ContextBuilder::default()
@@ -25,7 +30,11 @@ impl Worker {
             .build()
             .map_err(|e| format!("Failed to create context: {}", e))?;
 
-        let mut worker = Self { context, job_queue };
+        let mut worker = Self {
+            context,
+            job_queue,
+            fetch_response_tx: fetch_response_tx.clone(),
+        };
 
         // Register boa_runtime extensions (console, timers, etc.)
         boa_runtime::register(
@@ -39,8 +48,8 @@ impl Worker {
         )
         .map_err(|e| format!("Failed to register runtime: {}", e))?;
 
-        // Setup addEventListener
-        setup_event_listener(&mut worker.context)?;
+        // Setup addEventListener with response channel
+        setup_event_listener(&mut worker.context, fetch_response_tx)?;
 
         // Setup Response constructor
         setup_response(&mut worker.context)?;
@@ -77,6 +86,12 @@ impl Worker {
     ) -> Result<HttpResponse, String> {
         let req = &fetch_init.req;
 
+        // Create oneshot channel for response
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel::<String>();
+
+        // Store sender in the worker
+        *self.fetch_response_tx.borrow_mut() = Some(response_tx);
+
         // Create request object as JSON string
         let request_json = serde_json::json!({
             "method": req.method,
@@ -90,10 +105,8 @@ impl Worker {
             (function() {{
                 const request = {};
                 if (typeof globalThis.__triggerFetch === 'function') {{
-                    const response = globalThis.__triggerFetch(request);
-                    // Store for extraction
-                    globalThis.__lastResponse = response;
-                    return response;
+                    globalThis.__triggerFetch(request);
+                    return true;
                 }}
                 throw new Error("No fetch handler registered");
             }})()
@@ -105,44 +118,39 @@ impl Worker {
             .eval(Source::from_bytes(&trigger_script))
             .map_err(|e| format!("Fetch handler error: {}", e))?;
 
-        // Process jobs to handle any pending promises/timeouts
-        // Run for up to 200ms to allow timeouts to fire
-        for _ in 0..200 {
-            self.job_queue.drain_jobs(&mut self.context);
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        // Wait for response from JS (sent via __sendFetchResponse)
+        // Process callbacks in background while waiting
+        let response_json = tokio::select! {
+            result = response_rx => {
+                result.map_err(|_| "Response channel closed - handler may not have called respondWith")?
+            }
+            _ = async {
+                // Process callbacks in a loop to allow promises/timeouts to resolve
+                for _ in 0..200 {
+                    self.job_queue.drain_jobs(&mut self.context);
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            } => {
+                return Err("Response timeout: no response after 200ms".to_string());
+            }
+        };
+
+        // Parse the JSON response
+        #[derive(serde::Deserialize)]
+        struct ResponseData {
+            status: u16,
+            #[serde(default)]
+            headers: Vec<(String, String)>,
+            body: String,
         }
 
-        // Extract response
-        let response_val = self
-            .context
-            .eval(Source::from_bytes("globalThis.__lastResponse"))
-            .map_err(|e| format!("Failed to get response: {}", e))?;
+        let response_data: ResponseData = serde_json::from_str(&response_json)
+            .map_err(|e| format!("Failed to parse response JSON: {}", e))?;
 
-        let response = if let Some(obj) = response_val.as_object() {
-            let status = obj
-                .get(boa_engine::js_string!("status"), &mut self.context)
-                .ok()
-                .and_then(|v| v.to_number(&mut self.context).ok())
-                .unwrap_or(200.0) as u16;
-
-            let body = obj
-                .get(boa_engine::js_string!("body"), &mut self.context)
-                .ok()
-                .and_then(|v| v.to_string(&mut self.context).ok())
-                .map(|s| s.to_std_string_escaped())
-                .unwrap_or_default();
-
-            HttpResponse {
-                status,
-                headers: vec![],
-                body: Some(Bytes::from(body)),
-            }
-        } else {
-            HttpResponse {
-                status: 500,
-                headers: vec![],
-                body: Some(Bytes::from("Invalid response")),
-            }
+        let response = HttpResponse {
+            status: response_data.status,
+            headers: response_data.headers,
+            body: Some(Bytes::from(response_data.body)),
         };
 
         let _ = fetch_init.res_tx.send(response.clone());
@@ -150,11 +158,36 @@ impl Worker {
     }
 }
 
-fn setup_event_listener(context: &mut Context) -> Result<(), String> {
+fn setup_event_listener(
+    context: &mut Context,
+    fetch_response_tx: Rc<RefCell<Option<tokio::sync::oneshot::Sender<String>>>>,
+) -> Result<(), String> {
+    use boa_engine::{JsArgs, JsValue, js_string, native_function::NativeFunction};
+
+    // Create native __sendFetchResponse function
+    let send_response = unsafe {
+        NativeFunction::from_closure(move |_this, args, _context| {
+            if let Some(response_json) = args.get(0) {
+                if let Ok(json_str) = response_json.to_string(_context) {
+                    let json_string = json_str.to_std_string_escaped();
+                    if let Some(tx) = fetch_response_tx.borrow_mut().take() {
+                        let _ = tx.send(json_string);
+                    }
+                }
+            }
+            Ok(JsValue::undefined())
+        })
+    };
+
+    context
+        .register_global_callable(js_string!("__sendFetchResponse"), 1, send_response)
+        .map_err(|e| format!("Failed to register __sendFetchResponse: {}", e))?;
+
+    // Setup addEventListener with response sending
     let script = r#"
         globalThis.addEventListener = function(type, handler) {
             if (type === 'fetch') {
-                globalThis.__triggerFetch = function(request) {
+                globalThis.__triggerFetch = async function(request) {
                     const event = {
                         request: request,
                         respondWith: function(response) {
@@ -162,7 +195,20 @@ fn setup_event_listener(context: &mut Context) -> Result<(), String> {
                         }
                     };
                     handler(event);
-                    return event._response || new Response("No response");
+                    const response = event._response || new Response("No response");
+
+                    // Extract and send response data to Rust
+                    const responseData = {
+                        status: response.status || 200,
+                        body: String(response.body),
+                        headers: response.headers || {}
+                    };
+
+                    if (typeof globalThis.__sendFetchResponse === 'function') {
+                        globalThis.__sendFetchResponse(JSON.stringify(responseData));
+                    }
+
+                    return response;
                 };
             }
         };
