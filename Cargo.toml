@@ -29,3 +29,5 @@ bytes = { version = "1.11", features = ["serde"] }
 
 # Optional dependencies for examples/integration
 actix-web = { version = "4.12.0", features = ["macros"], optional = true }
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "rustls-tls"] }
+http = "1.4.0"

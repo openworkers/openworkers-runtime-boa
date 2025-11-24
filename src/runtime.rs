@@ -92,3 +92,6 @@ impl JobExecutor for TokioJobQueue {
         Ok(())
     }
 }
+
+// NOTE: fetch() is now provided by boa_runtime::FetchExtension with AsyncReqwestFetcher
+// Response constructor workaround is in worker.rs until Boa fixes their implementation
