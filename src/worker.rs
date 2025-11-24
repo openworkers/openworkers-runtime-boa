@@ -36,12 +36,18 @@ impl Worker {
             fetch_response_tx: fetch_response_tx.clone(),
         };
 
-        // Register boa_runtime extensions (console, timers, etc.)
+        // Register boa_runtime extensions (console, timers, fetch, URL, encoding, etc.)
         boa_runtime::register(
             (
                 boa_runtime::extensions::ConsoleExtension::default(),
                 boa_runtime::extensions::TimeoutExtension,
                 boa_runtime::extensions::MicrotaskExtension,
+                boa_runtime::extensions::FetchExtension(
+                    boa_runtime::fetch::BlockingReqwestFetcher::default(),
+                ),
+                boa_runtime::extensions::UrlExtension,
+                boa_runtime::extensions::EncodingExtension,
+                boa_runtime::extensions::StructuredCloneExtension,
             ),
             None,
             &mut worker.context,
@@ -162,7 +168,7 @@ fn setup_event_listener(
     context: &mut Context,
     fetch_response_tx: Rc<RefCell<Option<tokio::sync::oneshot::Sender<String>>>>,
 ) -> Result<(), String> {
-    use boa_engine::{JsArgs, JsValue, js_string, native_function::NativeFunction};
+    use boa_engine::{JsValue, js_string, native_function::NativeFunction};
 
     // Create native __sendFetchResponse function
     let send_response = unsafe {

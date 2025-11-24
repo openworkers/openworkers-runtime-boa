@@ -10,7 +10,7 @@ actix = ["dep:actix-web"]
 # Boa JavaScript engine
 boa_engine = "0.21"
 boa_gc = "0.21"
-boa_runtime = "0.21"
+boa_runtime = { version = "0.21", features = ["reqwest-blocking", "url"] }
 
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
