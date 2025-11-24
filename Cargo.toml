@@ -3,4 +3,28 @@ name = "openworkers-runtime-boa"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+actix = ["dep:actix-web"]
+
 [dependencies]
+# Boa JavaScript engine
+boa_engine = "0.20"
+boa_gc = "0.20"
+
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+futures = "0.3"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP
+bytes = { version = "1.11", features = ["serde"] }
+
+# Optional dependencies for examples/integration
+actix-web = { version = "4.12.0", features = ["macros"], optional = true }
