@@ -8,8 +8,9 @@ actix = ["dep:actix-web"]
 
 [dependencies]
 # Boa JavaScript engine
-boa_engine = "0.20"
-boa_gc = "0.20"
+boa_engine = "0.21"
+boa_gc = "0.21"
+boa_runtime = "0.21"
 
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
