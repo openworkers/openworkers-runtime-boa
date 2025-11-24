@@ -1,31 +1,51 @@
-# openworkers-runtime-boa
+# OpenWorkers Runtime - Boa
 
-A high-performance JavaScript runtime for OpenWorkers based on [Boa](https://github.com/boa-dev/boa) - a 100% Rust JavaScript engine.
+A JavaScript runtime for OpenWorkers based on [Boa](https://github.com/boa-dev/boa) - a JavaScript engine written in 100% Rust.
 
 ## Features
 
 - ✅ **100% Rust** - No C/C++ dependencies
-- ✅ **Fast cold start** - ~8ms average (5.2ms init + 2.9ms exec)
-- ✅ **Web APIs** - fetch(), URL, console, timers
-- ✅ **Event handlers** - addEventListener('fetch'), addEventListener('scheduled')
-- ✅ **Async/await** - Full Promise support
-- ✅ **HTTP forwarding** - External fetch() calls with reqwest
+- ✅ **Fast Startup** - Consistent ~1.7ms total time
+- ✅ **Async/Await** - Full Promise support
+- ✅ **Timers** - setTimeout, setInterval, clearTimeout, clearInterval
+- ✅ **Fetch API** - HTTP requests to external APIs
+- ✅ **Event Handlers** - addEventListener('fetch'), addEventListener('scheduled')
+- ✅ **Console Logging** - console.log/warn/error
+- ✅ **URL API** - URL parsing
 
 ## Performance
 
-```
-Worker::new(): avg=5.2ms, min=3ms, max=12ms
-exec():        avg=2.9ms, min=2.5ms, max=3.6ms
-Total:         avg=8.2ms, min=5.7ms, max=15.8ms
+Run benchmark:
+```bash
+cargo run --example benchmark --release
 ```
 
-Significantly faster than V8-based runtimes (Deno: ~22ms cold start).
+### Results (Apple Silicon, Release Mode)
+
+```
+Worker::new(): avg=1.22ms, min=605µs, max=3.3ms
+exec():        avg=681µs, min=441µs, max=1.28ms
+Total:         avg=1.91ms, min=1.05ms, max=4.6ms
+```
+
+### Runtime Comparison
+
+| Runtime | Engine | Worker::new() | exec() | Total | Language |
+|---------|--------|---------------|--------|-------|----------|
+| **[V8](https://github.com/openworkers/openworkers-runtime-v8)** | V8 | 2.9ms | **15µs** ⚡ | ~3ms | Rust + C++ |
+| **[JSC](https://github.com/openworkers/openworkers-runtime-jsc)** | JavaScriptCore | 495µs* | 434µs | **935µs** 🏆 | Rust + C |
+| **[Boa](https://github.com/openworkers/openworkers-runtime-boa)** | Boa | **605µs** | 441µs | 1.05ms | **100% Rust** |
+| **[Deno](https://github.com/openworkers/openworkers-runtime)** | V8 + Deno | 4.6ms | 1.07ms | 5.8ms | Rust + C++ |
+
+*JSC has ~40ms warmup on first run, then stabilizes
+
+**Boa is 100% Rust** with consistent performance and no native dependencies.
 
 ## Installation
 
 ```toml
 [dependencies]
-openworkers-runtime-boa = "0.1"
+openworkers-runtime-boa = { path = "../openworkers-runtime-boa" }
 ```
 
 ## Usage
@@ -39,7 +59,14 @@ async fn main() {
     let code = r#"
         addEventListener('fetch', async (event) => {
             const { pathname } = new URL(event.request.url);
-            event.respondWith(new Response(`Hello from ${pathname}!`));
+
+            if (pathname === '/api') {
+                // Fetch forward to external API
+                const response = await fetch('https://api.example.com/data');
+                event.respondWith(response);
+            } else {
+                event.respondWith(new Response('Hello from Boa!'));
+            }
         });
     "#;
 
@@ -48,7 +75,7 @@ async fn main() {
 
     let req = HttpRequest {
         method: "GET".to_string(),
-        url: "http://localhost/test".to_string(),
+        url: "http://localhost/".to_string(),
         headers: HashMap::new(),
         body: None,
     };
@@ -61,80 +88,86 @@ async fn main() {
 }
 ```
 
-## Supported APIs
-
-### Web APIs
-- `fetch()` - HTTP requests with external APIs
-- `URL` / `URLSearchParams` - URL parsing
-- `console.log/warn/error/info/debug` - Logging
-- `setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` - Timers
-- `Response` - HTTP responses (with workaround for Boa 0.21 constructor bug)
-- `Request` - HTTP requests (via fetch)
-
-### Event Handlers
-- `addEventListener('fetch', handler)` - Handle HTTP requests
-- `addEventListener('scheduled', handler)` - Handle scheduled/cron events
-- `event.respondWith(response)` - Send HTTP response
-- `event.waitUntil(promise)` - Wait for async operations
-
-## Examples
-
-Run examples with:
-
-```bash
-cargo run --example simple_test
-cargo run --example benchmark
-cargo run --example test_real_fetch
-cargo run --example test_fetch_forward
-```
-
 ## Testing
 
 ```bash
+# Run all tests (21 tests)
 cargo test
+
+# Run with output
+cargo test -- --nocapture
 ```
 
-21 integration tests covering all functionality.
+### Test Coverage
+
+- **Integration** (multiple) - Timers, fetch, scheduled events, error handling
+- Comprehensive scenarios validating async execution and callback timing
+
+**Total: 21 tests** ✅
+
+## Supported JavaScript APIs
+
+### Timers
+- `setTimeout(callback, delay)`
+- `setInterval(callback, interval)`
+- `clearTimeout(id)`
+- `clearInterval(id)`
+
+### Fetch API
+- `fetch(url, options)` - HTTP requests (GET, POST, PUT, DELETE, PATCH)
+- Response: status, text(), json()
+- Promise-based with async/await
+
+### Other APIs
+- `console.log/warn/error/info/debug`
+- `URL` - Basic URL parsing
+- `Response` - HTTP responses (with workaround for Boa constructor)
+- `addEventListener` - Event handling
+- `Date.now()` - Timestamps
+- `Math.*` - Standard math operations
 
 ## Known Limitations
 
 ### Response Constructor Workaround
 
-Boa 0.21 has a bug where the `Response` constructor ignores the `body` and `options` parameters. We provide a workaround that overrides the constructor with a working implementation.
+Boa 0.21 has a bug where the `Response` constructor ignores parameters. We provide a workaround that overrides the constructor.
 
-This workaround will be removed once [Boa issue #XXXXX](https://github.com/boa-dev/boa/issues/XXXXX) is fixed.
-
-Meanwhile:
-- ✅ `new Response(body, options)` works with our workaround
-- ✅ `fetch()` returns native Boa Response objects
-- ✅ All Web API compatibility maintained
+This workaround will be removed once the Boa issue is fixed.
 
 ### Fetch Implementation
 
 Uses `reqwest::blocking` with `tokio::spawn_blocking` to execute HTTP requests without blocking the async runtime.
 
-## Comparison with Other Runtimes
-
-| Runtime | Language | Cold Start | Maturity |
-|---------|----------|------------|----------|
-| **Boa** | 100% Rust | ~8ms | Beta |
-| JSCore | Rust + C | ~2ms | Stable |
-| Deno | Rust + C++ | ~22ms | Production |
-
 ## Architecture
 
-- `worker.rs` - Worker implementation with event handling
-- `runtime.rs` - TokioJobQueue for async job execution
-- `task.rs` - HTTP request/response types
-- `compat.rs` - Compatibility layer with other runtimes
+```
+src/
+├── lib.rs              # Public API
+├── worker.rs           # Worker with event handlers
+├── task.rs             # Task types (Fetch, Scheduled)
+├── compat.rs           # Compatibility layer
+└── runtime.rs          # Runtime with TokioJobQueue
+```
+
+## Key Advantages
+
+- **100% Rust** - No native dependencies, easier to build and deploy
+- **Consistent performance** - No warmup needed
+- **Pure Rust toolchain** - Compile anywhere Rust works
+- **Predictable** - No JIT compilation complexity
+
+## Other Runtime Implementations
+
+OpenWorkers supports multiple JavaScript engines:
+
+- **[openworkers-runtime](https://github.com/openworkers/openworkers-runtime)** - Deno-based (V8 + Deno extensions)
+- **[openworkers-runtime-jsc](https://github.com/openworkers/openworkers-runtime-jsc)** - JavaScriptCore
+- **[openworkers-runtime-boa](https://github.com/openworkers/openworkers-runtime-boa)** - This runtime (Boa, 100% Rust)
+- **[openworkers-runtime-v8](https://github.com/openworkers/openworkers-runtime-v8)** - V8 via rusty_v8
 
 ## License
 
-See LICENSE file.
-
-## Contributing
-
-This runtime is part of the [OpenWorkers](https://openworkers.com) project.
+MIT License - See LICENSE file.
 
 ## Credits
 
