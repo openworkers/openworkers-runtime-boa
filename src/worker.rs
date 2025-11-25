@@ -106,15 +106,170 @@ impl Worker {
             const NativeResponse = globalThis.Response;
             const nativeFetch = globalThis.fetch;
 
-            // Override Response constructor to make it actually work
-            globalThis.Response = function(body, init) {
-                init = init || {};
-                this.body = String(body || '');
-                this.status = init.status || 200;
-                this.headers = init.headers || {};
-                this.text = async function() {
-                    return this.body;
-                };
+            // WHATWG Headers class implementation
+            globalThis.Headers = class Headers {
+                constructor(init) {
+                    this._map = new Map();
+                    if (init) {
+                        if (init instanceof Headers) {
+                            for (const [key, value] of init) {
+                                this.append(key, value);
+                            }
+                        } else if (Array.isArray(init)) {
+                            for (let i = 0; i < init.length; i++) {
+                                const [key, value] = init[i];
+                                this.append(key, value);
+                            }
+                        } else if (typeof init === 'object') {
+                            const keys = Object.keys(init);
+                            for (let i = 0; i < keys.length; i++) {
+                                this.append(keys[i], init[keys[i]]);
+                            }
+                        }
+                    }
+                }
+
+                _normalizeKey(name) {
+                    return String(name).toLowerCase();
+                }
+
+                append(name, value) {
+                    const key = this._normalizeKey(name);
+                    const existing = this._map.get(key);
+                    if (existing !== undefined) {
+                        this._map.set(key, existing + ', ' + String(value));
+                    } else {
+                        this._map.set(key, String(value));
+                    }
+                }
+
+                delete(name) {
+                    this._map.delete(this._normalizeKey(name));
+                }
+
+                get(name) {
+                    const value = this._map.get(this._normalizeKey(name));
+                    return value !== undefined ? value : null;
+                }
+
+                has(name) {
+                    return this._map.has(this._normalizeKey(name));
+                }
+
+                set(name, value) {
+                    this._map.set(this._normalizeKey(name), String(value));
+                }
+
+                entries() {
+                    return this._map.entries();
+                }
+
+                keys() {
+                    return this._map.keys();
+                }
+
+                values() {
+                    return this._map.values();
+                }
+
+                forEach(callback, thisArg) {
+                    this._map.forEach((value, key) => {
+                        callback.call(thisArg, value, key, this);
+                    });
+                }
+
+                [Symbol.iterator]() {
+                    return this._map.entries();
+                }
+            };
+
+            // Improved Response class with proper Headers support
+            globalThis.Response = class Response {
+                constructor(body, init) {
+                    init = init || {};
+
+                    // Handle body
+                    if (body === null || body === undefined) {
+                        this._body = '';
+                    } else if (typeof body === 'string') {
+                        this._body = body;
+                    } else if (body instanceof Uint8Array) {
+                        this._body = new TextDecoder().decode(body);
+                    } else {
+                        this._body = String(body);
+                    }
+
+                    this.status = init.status || 200;
+                    this.statusText = init.statusText || 'OK';
+                    this.ok = this.status >= 200 && this.status < 300;
+                    this.bodyUsed = false;
+
+                    // Handle headers
+                    if (init.headers instanceof Headers) {
+                        this.headers = init.headers;
+                    } else {
+                        this.headers = new Headers(init.headers);
+                    }
+                }
+
+                // For internal use - get body as string
+                get body() {
+                    return this._body;
+                }
+
+                async text() {
+                    if (this.bodyUsed) {
+                        throw new TypeError('Body already consumed');
+                    }
+                    this.bodyUsed = true;
+                    return this._body;
+                }
+
+                async json() {
+                    const text = await this.text();
+                    return JSON.parse(text);
+                }
+
+                async arrayBuffer() {
+                    const text = await this.text();
+                    const encoder = new TextEncoder();
+                    return encoder.encode(text).buffer;
+                }
+
+                async bytes() {
+                    const text = await this.text();
+                    return new TextEncoder().encode(text);
+                }
+
+                clone() {
+                    if (this.bodyUsed) {
+                        throw new TypeError('Cannot clone a consumed response');
+                    }
+                    return new Response(this._body, {
+                        status: this.status,
+                        statusText: this.statusText,
+                        headers: new Headers(this.headers)
+                    });
+                }
+
+                static json(data, init) {
+                    init = init || {};
+                    const headers = new Headers(init.headers);
+                    if (!headers.has('content-type')) {
+                        headers.set('content-type', 'application/json');
+                    }
+                    return new Response(JSON.stringify(data), {
+                        ...init,
+                        headers: headers
+                    });
+                }
+
+                static redirect(url, status) {
+                    status = status || 302;
+                    const headers = new Headers();
+                    headers.set('location', url);
+                    return new Response(null, { status, headers });
+                }
             };
 
             // Keep native fetch (uses NativeResponse internally)
@@ -204,11 +359,17 @@ impl Worker {
                                 bodyText = String(response.body);
                             }}
 
-                            // Extract headers
+                            // Extract headers (support both Headers class and plain objects)
                             const headersArray = [];
-                            if (response.headers && typeof response.headers === 'object') {{
-                                for (const key in response.headers) {{
-                                    if (response.headers.hasOwnProperty(key)) {{
+                            if (response.headers) {{
+                                if (response.headers instanceof Headers) {{
+                                    for (const [key, value] of response.headers) {{
+                                        headersArray.push([key, value]);
+                                    }}
+                                }} else if (typeof response.headers === 'object') {{
+                                    const keys = Object.keys(response.headers);
+                                    for (let i = 0; i < keys.length; i++) {{
+                                        const key = keys[i];
                                         headersArray.push([key, String(response.headers[key])]);
                                     }}
                                 }}
