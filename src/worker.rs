@@ -183,20 +183,27 @@ impl Worker {
                 }
             };
 
-            // Improved Response class with proper Headers support
+            // Improved Response class with proper Headers and ReadableStream support
             globalThis.Response = class Response {
                 constructor(body, init) {
                     init = init || {};
 
-                    // Handle body
+                    // Handle body - support string, Uint8Array, ReadableStream
                     if (body === null || body === undefined) {
                         this._body = '';
+                        this._bodyStream = null;
+                    } else if (body instanceof ReadableStream) {
+                        this._body = null;
+                        this._bodyStream = body;
                     } else if (typeof body === 'string') {
                         this._body = body;
+                        this._bodyStream = null;
                     } else if (body instanceof Uint8Array) {
                         this._body = new TextDecoder().decode(body);
+                        this._bodyStream = null;
                     } else {
                         this._body = String(body);
+                        this._bodyStream = null;
                     }
 
                     this.status = init.status || 200;
@@ -212,9 +219,22 @@ impl Worker {
                     }
                 }
 
-                // For internal use - get body as string
+                // Body property returns ReadableStream or creates one from string
                 get body() {
-                    return this._body;
+                    if (this._bodyStream) {
+                        return this._bodyStream;
+                    }
+                    if (this._body === null || this._body === '') {
+                        return null;
+                    }
+                    // Create ReadableStream from string body (enqueue string directly)
+                    const bodyStr = this._body;
+                    return new ReadableStream({
+                        start(controller) {
+                            controller.enqueue(bodyStr);
+                            controller.close();
+                        }
+                    });
                 }
 
                 async text() {
@@ -222,7 +242,32 @@ impl Worker {
                         throw new TypeError('Body already consumed');
                     }
                     this.bodyUsed = true;
-                    return this._body;
+
+                    if (this._body !== null) {
+                        return this._body;
+                    }
+
+                    // Read from stream
+                    if (this._bodyStream) {
+                        const reader = this._bodyStream.getReader();
+                        let result = '';
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            // Handle both string and Uint8Array chunks
+                            if (typeof value === 'string') {
+                                result += value;
+                            } else if (value && value.length) {
+                                // Assume Uint8Array-like, convert to string
+                                for (let i = 0; i < value.length; i++) {
+                                    result += String.fromCharCode(value[i]);
+                                }
+                            }
+                        }
+                        return result;
+                    }
+
+                    return '';
                 }
 
                 async json() {
@@ -244,6 +289,9 @@ impl Worker {
                 clone() {
                     if (this.bodyUsed) {
                         throw new TypeError('Cannot clone a consumed response');
+                    }
+                    if (this._bodyStream) {
+                        throw new TypeError('Cannot clone a streaming response');
                     }
                     return new Response(this._body, {
                         status: this.status,
@@ -274,6 +322,193 @@ impl Worker {
 
             // Keep native fetch (uses NativeResponse internally)
             globalThis.fetch = nativeFetch;
+
+            // ReadableStream implementation using function constructors (Boa has issues with class getters)
+            function ReadableStream(underlyingSource) {
+                underlyingSource = underlyingSource || {};
+                this._underlyingSource = underlyingSource;
+                this._controller = null;
+                this._reader = null;
+                this._state = 'readable';
+                this._storedError = null;
+
+                const controller = new ReadableStreamDefaultController(this);
+                this._controller = controller;
+
+                if (underlyingSource.start) {
+                    Promise.resolve(underlyingSource.start(controller)).catch(function(e) {
+                        controller.error(e);
+                    });
+                }
+            }
+
+            ReadableStream.prototype.getReader = function() {
+                if (this._reader) {
+                    throw new TypeError('ReadableStream is locked to a reader');
+                }
+                const reader = new ReadableStreamDefaultReader(this);
+                this._reader = reader;
+                return reader;
+            };
+
+            ReadableStream.prototype.cancel = function(reason) {
+                if (this._state === 'closed') return Promise.resolve();
+                if (this._state === 'errored') return Promise.reject(this._storedError);
+
+                this._state = 'closed';
+                if (this._reader) {
+                    this._reader._closePending();
+                    this._reader = null;
+                }
+                if (this._underlyingSource.cancel) {
+                    return Promise.resolve(this._underlyingSource.cancel(reason));
+                }
+                return Promise.resolve();
+            };
+
+            Object.defineProperty(ReadableStream.prototype, 'locked', {
+                get: function() { return this._reader !== null; }
+            });
+
+            globalThis.ReadableStream = ReadableStream;
+
+            function ReadableStreamDefaultController(stream) {
+                this._stream = stream;
+                this._queue = [];
+                this._closeRequested = false;
+            }
+
+            ReadableStreamDefaultController.prototype.enqueue = function(chunk) {
+                if (this._closeRequested) throw new TypeError('Cannot enqueue after close');
+                if (this._stream._state !== 'readable') throw new TypeError('Stream not readable');
+                this._queue.push({ type: 'chunk', value: chunk });
+                this._processQueue();
+            };
+
+            ReadableStreamDefaultController.prototype.close = function() {
+                if (this._closeRequested) throw new TypeError('Stream is already closing');
+                if (this._stream._state !== 'readable') throw new TypeError('Stream not readable');
+                this._closeRequested = true;
+                this._queue.push({ type: 'close' });
+                this._processQueue();
+            };
+
+            ReadableStreamDefaultController.prototype.error = function(error) {
+                if (this._stream._state !== 'readable') return;
+                this._stream._state = 'errored';
+                this._stream._storedError = error;
+                if (this._stream._reader) this._stream._reader._errorPending(error);
+                this._queue = [];
+            };
+
+            ReadableStreamDefaultController.prototype._processQueue = function() {
+                if (this._stream._reader) this._stream._reader._processQueue();
+            };
+
+            Object.defineProperty(ReadableStreamDefaultController.prototype, 'desiredSize', {
+                get: function() {
+                    if (this._stream._state === 'errored') return null;
+                    if (this._stream._state === 'closed') return 0;
+                    return Math.max(0, 1 - this._queue.length);
+                }
+            });
+
+            globalThis.ReadableStreamDefaultController = ReadableStreamDefaultController;
+
+            function ReadableStreamDefaultReader(stream) {
+                if (stream._reader) throw new TypeError('Stream is already locked');
+                this._stream = stream;
+                this._readRequests = [];
+                const self = this;
+                this._closedPromise = new Promise(function(resolve, reject) {
+                    self._closedPromiseResolve = resolve;
+                    self._closedPromiseReject = reject;
+                });
+            }
+
+            ReadableStreamDefaultReader.prototype.read = function() {
+                const self = this;
+                if (!this._stream) return Promise.reject(new TypeError('Reader is released'));
+                if (this._stream._state === 'errored') return Promise.reject(this._stream._storedError);
+
+                const controller = this._stream._controller;
+                if (controller._queue.length > 0) {
+                    const item = controller._queue.shift();
+                    if (item.type === 'close') {
+                        this._stream._state = 'closed';
+                        this._closePending();
+                        return Promise.resolve({ done: true, value: undefined });
+                    }
+                    return Promise.resolve({ done: false, value: item.value });
+                }
+
+                if (this._stream._state === 'closed') {
+                    return Promise.resolve({ done: true, value: undefined });
+                }
+
+                return new Promise(function(resolve, reject) {
+                    self._readRequests.push({ resolve: resolve, reject: reject });
+                });
+            };
+
+            ReadableStreamDefaultReader.prototype._processQueue = function() {
+                const controller = this._stream._controller;
+                while (this._readRequests.length > 0 && controller._queue.length > 0) {
+                    const request = this._readRequests.shift();
+                    const item = controller._queue.shift();
+                    if (item.type === 'close') {
+                        this._stream._state = 'closed';
+                        request.resolve({ done: true, value: undefined });
+                        this._closePending();
+                        break;
+                    }
+                    request.resolve({ done: false, value: item.value });
+                }
+                if (this._stream._state === 'closed') {
+                    while (this._readRequests.length > 0) {
+                        this._readRequests.shift().resolve({ done: true, value: undefined });
+                    }
+                }
+            };
+
+            ReadableStreamDefaultReader.prototype._closePending = function() {
+                if (this._closedPromiseResolve) {
+                    this._closedPromiseResolve();
+                    this._closedPromiseResolve = null;
+                }
+            };
+
+            ReadableStreamDefaultReader.prototype._errorPending = function(error) {
+                while (this._readRequests.length > 0) {
+                    this._readRequests.shift().reject(error);
+                }
+                if (this._closedPromiseReject) {
+                    this._closedPromiseReject(error);
+                    this._closedPromiseReject = null;
+                }
+            };
+
+            ReadableStreamDefaultReader.prototype.releaseLock = function() {
+                if (!this._stream) return;
+                if (this._readRequests.length > 0) {
+                    throw new TypeError('Cannot release lock while reads pending');
+                }
+                this._stream._reader = null;
+                this._stream = null;
+            };
+
+            ReadableStreamDefaultReader.prototype.cancel = function(reason) {
+                if (!this._stream) return Promise.reject(new TypeError('Reader is released'));
+                const p = this._stream.cancel(reason);
+                this.releaseLock();
+                return p;
+            };
+
+            Object.defineProperty(ReadableStreamDefaultReader.prototype, 'closed', {
+                get: function() { return this._closedPromise; }
+            });
+
+            globalThis.ReadableStreamDefaultReader = ReadableStreamDefaultReader;
         "#;
 
         context
@@ -350,13 +585,13 @@ impl Worker {
                                 try {{
                                     bodyText = await response.text();
                                 }} catch (e) {{
-                                    // Ignore .text() errors, fallback to .body
+                                    // Ignore .text() errors, fallback to _body
                                 }}
                             }}
 
-                            // Fallback to .body property (our simple implementation)
-                            if (!bodyText && response.body !== undefined) {{
-                                bodyText = String(response.body);
+                            // Fallback to internal _body property (our implementation stores string here)
+                            if (!bodyText && response._body !== undefined && response._body !== null) {{
+                                bodyText = String(response._body);
                             }}
 
                             // Extract headers (support both Headers class and plain objects)
