@@ -6,7 +6,9 @@ pub mod worker;
 
 // Core API
 pub use runtime::TokioJobQueue;
-pub use task::{FetchInit, HttpRequest, HttpResponse, ScheduledInit, Task, TaskType};
+pub use task::{
+    FetchInit, HttpRequest, HttpResponse, ResponseBody, ScheduledInit, Task, TaskType,
+};
 pub use worker::Worker;
 
 // Compatibility exports (matching openworkers-runtime)

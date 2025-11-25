@@ -348,10 +348,10 @@ impl Worker {
                 let response = HttpResponse {
                     status,
                     headers,
-                    body: Some(Bytes::from(body)),
+                    body: crate::task::ResponseBody::Bytes(Bytes::from(body)),
                 };
 
-                let _ = fetch_init.res_tx.send(response.clone());
+                let _ = fetch_init.res_tx.send(response);
                 Ok(TerminationReason::Success)
             }
             Task::Scheduled(ref mut init) => {
