@@ -47,8 +47,8 @@ addEventListener('fetch', async (event) => {
     let response = rx.await.unwrap();
     println!("\n=== Response ===");
     println!("Status: {}", response.status);
-    if let Some(body) = response.body {
-        let body_str = String::from_utf8_lossy(&body);
+    if let Some(body) = response.body.as_bytes() {
+        let body_str = String::from_utf8_lossy(body);
         println!("Body length: {}", body_str.len());
         if body_str.contains("slideshow") {
             println!("✅ Real fetch worked! Got JSON from httpbin");

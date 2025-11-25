@@ -49,8 +49,8 @@ async function handleRequest(request) {
         Ok(_) => match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
             Ok(Ok(response)) => {
                 println!("Status: {}", response.status);
-                if let Some(body) = response.body {
-                    let body_str = String::from_utf8_lossy(&body);
+                if let Some(body) = response.body.as_bytes() {
+                    let body_str = String::from_utf8_lossy(body);
                     println!("Body length: {}", body_str.len());
                     println!("Body preview: {}", &body_str[..body_str.len().min(100)]);
                 }

@@ -27,7 +27,7 @@ async fn test_simple_response() {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
     assert_eq!(
-        String::from_utf8_lossy(response.body.as_ref().unwrap()),
+        String::from_utf8_lossy(response.body.as_bytes().unwrap()),
         "Hello World"
     );
 }
@@ -56,7 +56,7 @@ async fn test_custom_status() {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 404);
     assert_eq!(
-        String::from_utf8_lossy(response.body.as_ref().unwrap()),
+        String::from_utf8_lossy(response.body.as_bytes().unwrap()),
         "Not Found"
     );
 }
@@ -86,7 +86,7 @@ async fn test_async_handler() {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
     assert_eq!(
-        String::from_utf8_lossy(response.body.as_ref().unwrap()),
+        String::from_utf8_lossy(response.body.as_bytes().unwrap()),
         "Async Response"
     );
 }
@@ -142,7 +142,10 @@ async fn test_empty_body() {
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
-    assert_eq!(String::from_utf8_lossy(response.body.as_ref().unwrap()), "");
+    assert_eq!(
+        String::from_utf8_lossy(response.body.as_bytes().unwrap()),
+        ""
+    );
 }
 
 #[tokio::test]
@@ -169,7 +172,7 @@ async fn test_multiple_requests() {
     worker.exec(task1).await.unwrap();
     let response1 = rx1.await.unwrap();
     assert_eq!(
-        String::from_utf8_lossy(response1.body.as_ref().unwrap()),
+        String::from_utf8_lossy(response1.body.as_bytes().unwrap()),
         "Request 1"
     );
 
@@ -184,7 +187,7 @@ async fn test_multiple_requests() {
     worker.exec(task2).await.unwrap();
     let response2 = rx2.await.unwrap();
     assert_eq!(
-        String::from_utf8_lossy(response2.body.as_ref().unwrap()),
+        String::from_utf8_lossy(response2.body.as_bytes().unwrap()),
         "Request 2"
     );
 }
@@ -213,7 +216,7 @@ async fn test_large_body() {
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
-    assert_eq!(response.body.as_ref().unwrap().len(), 10000);
+    assert_eq!(response.body.as_bytes().unwrap().len(), 10000);
 }
 
 #[tokio::test]
@@ -241,7 +244,7 @@ async fn test_json_response() {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body = String::from_utf8_lossy(response.body.as_ref().unwrap());
+    let body = String::from_utf8_lossy(response.body.as_bytes().unwrap());
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(json["message"], "Hello");
     assert_eq!(json["status"], "ok");
@@ -310,7 +313,7 @@ async fn test_promise_response() {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
     assert_eq!(
-        String::from_utf8_lossy(response.body.as_ref().unwrap()),
+        String::from_utf8_lossy(response.body.as_bytes().unwrap()),
         "Promise Response"
     );
 }
@@ -341,7 +344,7 @@ addEventListener("fetch", (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
     assert_eq!(
-        String::from_utf8_lossy(response.body.as_ref().unwrap()),
+        String::from_utf8_lossy(response.body.as_bytes().unwrap()),
         "Path: /test/path, Host: example.com"
     );
 }
@@ -378,7 +381,7 @@ async function handleRequest() {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 500);
     assert_eq!(
-        String::from_utf8_lossy(response.body.as_ref().unwrap()),
+        String::from_utf8_lossy(response.body.as_bytes().unwrap()),
         "Test error"
     );
 }
@@ -409,7 +412,7 @@ addEventListener("fetch", async (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body = String::from_utf8_lossy(response.body.as_ref().unwrap());
+    let body = String::from_utf8_lossy(response.body.as_bytes().unwrap());
     assert_eq!(body, "fetch available: true");
 }
 
@@ -446,7 +449,7 @@ addEventListener("fetch", (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body = String::from_utf8_lossy(response.body.as_ref().unwrap());
+    let body = String::from_utf8_lossy(response.body.as_bytes().unwrap());
     assert!(body.contains("Bearer token123"));
     assert!(body.contains("application/json"));
 }
@@ -477,7 +480,7 @@ addEventListener("fetch", (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body = String::from_utf8_lossy(response.body.as_ref().unwrap());
+    let body = String::from_utf8_lossy(response.body.as_bytes().unwrap());
     assert!(body.contains("Method: POST"));
     assert!(body.contains("URL: http://example.com/api/users"));
 }
