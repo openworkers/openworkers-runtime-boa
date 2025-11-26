@@ -1,13 +1,16 @@
-use crate::compat::{Script, TerminationReason};
-use crate::task::{HttpResponse, Task};
 use boa_engine::{
     Context, Finalize, JsData, JsResult, JsString, Source, Trace, object::builtins::JsPromise,
 };
 use boa_runtime::RuntimeExtension;
 use boa_runtime::fetch::{Fetcher, request::JsRequest, response::JsResponse};
 use bytes::Bytes;
+use openworkers_core::{
+    HttpResponse, LogSender, ResponseBody, RuntimeLimits, Script, Task, TerminationReason,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // Custom fetcher that uses spawn_blocking to avoid blocking tokio runtime
 #[derive(Clone, Debug, Trace, Finalize, JsData, Default)]
@@ -68,35 +71,44 @@ impl Fetcher for SpawnBlockingFetcher {
 
 pub struct Worker {
     context: Context,
+    aborted: Arc<AtomicBool>,
 }
 
 impl Worker {
     pub async fn new(
         script: Script,
-        _log_tx: Option<std::sync::mpsc::Sender<crate::compat::LogEvent>>,
-        _limits: Option<crate::compat::RuntimeLimits>,
-    ) -> Result<Self, String> {
+        _log_tx: Option<LogSender>,
+        _limits: Option<RuntimeLimits>,
+    ) -> Result<Self, TerminationReason> {
         let mut context = Context::default();
 
         // Register console
         boa_runtime::extensions::ConsoleExtension::default()
             .register(None, &mut context)
-            .map_err(|e| format!("Failed to register console: {}", e))?;
+            .map_err(|e| {
+                TerminationReason::InitializationError(format!("Failed to register console: {}", e))
+            })?;
 
         // Register timers
         boa_runtime::extensions::TimeoutExtension
             .register(None, &mut context)
-            .map_err(|e| format!("Failed to register timers: {}", e))?;
+            .map_err(|e| {
+                TerminationReason::InitializationError(format!("Failed to register timers: {}", e))
+            })?;
 
         // Register URL API
         boa_runtime::extensions::UrlExtension
             .register(None, &mut context)
-            .map_err(|e| format!("Failed to register URL: {}", e))?;
+            .map_err(|e| {
+                TerminationReason::InitializationError(format!("Failed to register URL: {}", e))
+            })?;
 
         // Register fetch with our custom fetcher using spawn_blocking
         boa_runtime::extensions::FetchExtension(SpawnBlockingFetcher)
             .register(None, &mut context)
-            .map_err(|e| format!("Failed to register fetch: {}", e))?;
+            .map_err(|e| {
+                TerminationReason::InitializationError(format!("Failed to register fetch: {}", e))
+            })?;
 
         // Override Response constructor with our working implementation
         // (until Boa fixes their constructor to actually use the body parameter)
@@ -513,7 +525,12 @@ impl Worker {
 
         context
             .eval(Source::from_bytes(setup_response))
-            .map_err(|e| format!("Failed to setup Response workaround: {}", e))?;
+            .map_err(|e| {
+                TerminationReason::InitializationError(format!(
+                    "Failed to setup Response workaround: {}",
+                    e
+                ))
+            })?;
 
         // Setup addEventListener
         let setup = r#"
@@ -528,20 +545,38 @@ impl Worker {
 
         context
             .eval(Source::from_bytes(setup))
-            .map_err(|e| format!("Setup failed: {}", e))?;
+            .map_err(|e| TerminationReason::InitializationError(format!("Setup failed: {}", e)))?;
 
         // Evaluate user script
         context
             .eval(Source::from_bytes(&script.code))
-            .map_err(|e| format!("Script evaluation failed: {}", e))?;
+            .map_err(|e| {
+                TerminationReason::Exception(format!("Script evaluation failed: {}", e))
+            })?;
 
-        Ok(Self { context })
+        Ok(Self {
+            context,
+            aborted: Arc::new(AtomicBool::new(false)),
+        })
     }
 
-    pub async fn exec(&mut self, mut task: Task) -> Result<TerminationReason, String> {
+    /// Abort the worker execution
+    pub fn abort(&mut self) {
+        self.aborted.store(true, Ordering::SeqCst);
+        // Boa doesn't have a direct interrupt mechanism
+    }
+
+    pub async fn exec(&mut self, mut task: Task) -> Result<(), TerminationReason> {
+        // Check if aborted before starting
+        if self.aborted.load(Ordering::SeqCst) {
+            return Err(TerminationReason::Aborted);
+        }
+
         match task {
             Task::Fetch(ref mut init) => {
-                let fetch_init = init.take().ok_or("FetchInit already consumed")?;
+                let fetch_init = init.take().ok_or(TerminationReason::Other(
+                    "FetchInit already consumed".to_string(),
+                ))?;
                 let req = &fetch_init.req;
 
                 // Create request object as JSON
@@ -629,7 +664,12 @@ impl Worker {
                 let promise_result = self
                     .context
                     .eval(Source::from_bytes(&trigger_script))
-                    .map_err(|e| format!("Fetch handler execution failed: {}", e))?;
+                    .map_err(|e| {
+                        TerminationReason::Exception(format!(
+                            "Fetch handler execution failed: {}",
+                            e
+                        ))
+                    })?;
 
                 // If it's a promise, we need to run jobs until it resolves
                 if let Some(promise_obj) = promise_result.as_object() {
@@ -650,7 +690,10 @@ impl Worker {
                                         .to_string(&mut self.context)
                                         .map(|s| s.to_std_string_escaped())
                                         .unwrap_or_else(|_| "Unknown error".to_string());
-                                    return Err(format!("Promise rejected: {}", err_str));
+                                    return Err(TerminationReason::Exception(format!(
+                                        "Promise rejected: {}",
+                                        err_str
+                                    )));
                                 }
                             }
                         }
@@ -674,16 +717,20 @@ impl Worker {
                     .context
                     .global_object()
                     .get(boa_engine::js_string!("__lastResponse"), &mut self.context)
-                    .map_err(|e| format!("Failed to get response: {}", e))?;
+                    .map_err(|e| {
+                        TerminationReason::Exception(format!("Failed to get response: {}", e))
+                    })?;
 
                 if response_obj.is_undefined() {
-                    return Err("No response set".to_string());
+                    return Err(TerminationReason::Exception("No response set".to_string()));
                 }
 
                 // Extract fields from response object
                 let resp_obj = response_obj
                     .as_object()
-                    .ok_or("Response is not an object")?;
+                    .ok_or(TerminationReason::Exception(
+                        "Response is not an object".to_string(),
+                    ))?;
 
                 let status = resp_obj
                     .get(boa_engine::js_string!("status"), &mut self.context)
@@ -744,14 +791,16 @@ impl Worker {
                 let response = HttpResponse {
                     status,
                     headers,
-                    body: crate::task::ResponseBody::Bytes(Bytes::from(body)),
+                    body: ResponseBody::Bytes(Bytes::from(body)),
                 };
 
                 let _ = fetch_init.res_tx.send(response);
-                Ok(TerminationReason::Success)
+                Ok(())
             }
             Task::Scheduled(ref mut init) => {
-                let scheduled_init = init.take().ok_or("ScheduledInit already consumed")?;
+                let scheduled_init = init.take().ok_or(TerminationReason::Other(
+                    "ScheduledInit already consumed".to_string(),
+                ))?;
 
                 // Trigger scheduled event
                 let trigger_script = format!(
@@ -790,7 +839,12 @@ impl Worker {
                 let promise_result = self
                     .context
                     .eval(Source::from_bytes(&trigger_script))
-                    .map_err(|e| format!("Scheduled handler execution failed: {}", e))?;
+                    .map_err(|e| {
+                        TerminationReason::Exception(format!(
+                            "Scheduled handler execution failed: {}",
+                            e
+                        ))
+                    })?;
 
                 // Process jobs until promise settles
                 if let Some(promise_obj) = promise_result.as_object() {
@@ -809,7 +863,10 @@ impl Worker {
                                         .to_string(&mut self.context)
                                         .map(|s| s.to_std_string_escaped())
                                         .unwrap_or_else(|_| "Unknown error".to_string());
-                                    return Err(format!("Scheduled promise rejected: {}", err_str));
+                                    return Err(TerminationReason::Exception(format!(
+                                        "Scheduled promise rejected: {}",
+                                        err_str
+                                    )));
                                 }
                             }
                         }
@@ -818,8 +875,26 @@ impl Worker {
 
                 // Send success signal through channel
                 let _ = scheduled_init.res_tx.send(());
-                Ok(TerminationReason::Success)
+                Ok(())
             }
         }
+    }
+}
+
+impl openworkers_core::Worker for Worker {
+    async fn new(
+        script: Script,
+        log_tx: Option<LogSender>,
+        limits: Option<RuntimeLimits>,
+    ) -> Result<Self, TerminationReason> {
+        Worker::new(script, log_tx, limits).await
+    }
+
+    async fn exec(&mut self, task: Task) -> Result<(), TerminationReason> {
+        Worker::exec(self, task).await
+    }
+
+    fn abort(&mut self) {
+        Worker::abort(self)
     }
 }

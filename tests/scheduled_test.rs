@@ -1,4 +1,4 @@
-use openworkers_runtime_boa::{Script, Task, TerminationReason, Worker};
+use openworkers_runtime_boa::{Script, Task, Worker};
 
 #[tokio::test]
 async fn test_scheduled_event() {
@@ -17,9 +17,9 @@ async fn test_scheduled_event() {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let (task, rx) = Task::scheduled(1234567890);
-    let result = worker.exec(task).await.unwrap();
+    let result = worker.exec(task).await;
 
-    assert_eq!(result, TerminationReason::Success);
+    assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
     rx.await.unwrap(); // Should not timeout
 }
 
@@ -41,9 +41,9 @@ async fn test_scheduled_with_waituntil() {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let (task, rx) = Task::scheduled(1234567890);
-    let result = worker.exec(task).await.unwrap();
+    let result = worker.exec(task).await;
 
-    assert_eq!(result, TerminationReason::Success);
+    assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
     rx.await.unwrap();
 }
 
@@ -61,8 +61,8 @@ async fn test_scheduled_async_handler() {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let (task, rx) = Task::scheduled(1234567890);
-    let result = worker.exec(task).await.unwrap();
+    let result = worker.exec(task).await;
 
-    assert_eq!(result, TerminationReason::Success);
+    assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
     rx.await.unwrap();
 }
