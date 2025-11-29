@@ -1,4 +1,5 @@
-use openworkers_runtime_boa::{Script, Task, Worker};
+use openworkers_core::{Script, Task};
+use openworkers_runtime_boa::Worker;
 
 #[tokio::test]
 async fn test_scheduled_event() {

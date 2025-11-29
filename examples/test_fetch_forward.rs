@@ -1,4 +1,5 @@
-use openworkers_runtime_boa::{HttpRequest, Script, Task, Worker};
+use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_runtime_boa::Worker;
 use std::collections::HashMap;
 
 #[tokio::main]
@@ -37,10 +38,10 @@ async function handleRequest(request) {
     println!("=== Testing /test route with fetch forward ===\n");
 
     let req = HttpRequest {
-        method: "GET".to_string(),
+        method: HttpMethod::Get,
         url: "http://localhost/test".to_string(),
         headers: HashMap::new(),
-        body: None,
+        body: RequestBody::None,
     };
 
     let (task, rx) = Task::fetch(req);
@@ -49,8 +50,8 @@ async function handleRequest(request) {
         Ok(_) => match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
             Ok(Ok(response)) => {
                 println!("Status: {}", response.status);
-                if let Some(body) = response.body.as_bytes() {
-                    let body_str = String::from_utf8_lossy(body);
+                if let Some(body) = response.body.collect().await {
+                    let body_str = String::from_utf8_lossy(&body);
                     println!("Body length: {}", body_str.len());
                     println!("Body preview: {}", &body_str[..body_str.len().min(100)]);
                 }

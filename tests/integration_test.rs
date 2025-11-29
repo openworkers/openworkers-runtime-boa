@@ -1,7 +1,8 @@
 //! Additional integration tests for boa runtime
 //! Basic tests are generated from openworkers_core::generate_worker_tests!
 
-use openworkers_runtime_boa::{HttpRequest, Script, Task, Worker};
+use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_runtime_boa::Worker;
 use std::collections::HashMap;
 
 #[tokio::test]
@@ -17,10 +18,10 @@ async fn test_large_body() {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let req = HttpRequest {
-        method: "GET".to_string(),
+        method: HttpMethod::Get,
         url: "http://localhost/".to_string(),
         headers: HashMap::new(),
-        body: None,
+        body: RequestBody::None,
     };
 
     let (task, rx) = Task::fetch(req);
@@ -28,7 +29,7 @@ async fn test_large_body() {
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
-    assert_eq!(response.body.as_bytes().unwrap().len(), 10000);
+    assert_eq!(response.body.collect().await.unwrap().len(), 10000);
 }
 
 #[tokio::test]
@@ -42,10 +43,10 @@ async fn test_no_handler_registered() {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let req = HttpRequest {
-        method: "GET".to_string(),
+        method: HttpMethod::Get,
         url: "http://localhost/".to_string(),
         headers: HashMap::new(),
-        body: None,
+        body: RequestBody::None,
     };
 
     let (task, _rx) = Task::fetch(req);
@@ -70,10 +71,10 @@ async fn test_promise_response() {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let req = HttpRequest {
-        method: "GET".to_string(),
+        method: HttpMethod::Get,
         url: "http://localhost/".to_string(),
         headers: HashMap::new(),
-        body: None,
+        body: RequestBody::None,
     };
 
     let (task, rx) = Task::fetch(req);
@@ -81,10 +82,8 @@ async fn test_promise_response() {
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
-    assert_eq!(
-        String::from_utf8_lossy(response.body.as_bytes().unwrap()),
-        "Promise Response"
-    );
+    let body_bytes = response.body.collect().await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&body_bytes), "Promise Response");
 }
 
 #[tokio::test]
@@ -101,10 +100,10 @@ addEventListener("fetch", (event) => {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let req = HttpRequest {
-        method: "GET".to_string(),
+        method: HttpMethod::Get,
         url: "http://example.com/test/path".to_string(),
         headers: HashMap::new(),
-        body: None,
+        body: RequestBody::None,
     };
 
     let (task, rx) = Task::fetch(req);
@@ -112,8 +111,9 @@ addEventListener("fetch", (event) => {
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
+    let body_bytes = response.body.collect().await.unwrap();
     assert_eq!(
-        String::from_utf8_lossy(response.body.as_bytes().unwrap()),
+        String::from_utf8_lossy(&body_bytes),
         "Path: /test/path, Host: example.com"
     );
 }
@@ -138,10 +138,10 @@ async function handleRequest() {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let req = HttpRequest {
-        method: "GET".to_string(),
+        method: HttpMethod::Get,
         url: "http://localhost/".to_string(),
         headers: HashMap::new(),
-        body: None,
+        body: RequestBody::None,
     };
 
     let (task, rx) = Task::fetch(req);
@@ -149,10 +149,8 @@ async function handleRequest() {
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 500);
-    assert_eq!(
-        String::from_utf8_lossy(response.body.as_bytes().unwrap()),
-        "Test error"
-    );
+    let body_bytes = response.body.collect().await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&body_bytes), "Test error");
 }
 
 #[tokio::test]
@@ -169,10 +167,10 @@ addEventListener("fetch", async (event) => {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let req = HttpRequest {
-        method: "GET".to_string(),
+        method: HttpMethod::Get,
         url: "http://localhost/".to_string(),
         headers: HashMap::new(),
-        body: None,
+        body: RequestBody::None,
     };
 
     let (task, rx) = Task::fetch(req);
@@ -181,7 +179,8 @@ addEventListener("fetch", async (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body = String::from_utf8_lossy(response.body.as_bytes().unwrap());
+    let body_bytes = response.body.collect().await.unwrap();
+    let body = String::from_utf8_lossy(&body_bytes);
     assert_eq!(body, "fetch available: true");
 }
 
@@ -206,10 +205,10 @@ addEventListener("fetch", (event) => {
     headers.insert("content-type".to_string(), "application/json".to_string());
 
     let req = HttpRequest {
-        method: "POST".to_string(),
+        method: HttpMethod::Post,
         url: "http://localhost/api".to_string(),
         headers,
-        body: None,
+        body: RequestBody::None,
     };
 
     let (task, rx) = Task::fetch(req);
@@ -218,7 +217,8 @@ addEventListener("fetch", (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body = String::from_utf8_lossy(response.body.as_bytes().unwrap());
+    let body_bytes = response.body.collect().await.unwrap();
+    let body = String::from_utf8_lossy(&body_bytes);
     assert!(body.contains("Bearer token123"));
     assert!(body.contains("application/json"));
 }
@@ -237,10 +237,10 @@ addEventListener("fetch", (event) => {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let req = HttpRequest {
-        method: "POST".to_string(),
+        method: HttpMethod::Post,
         url: "http://example.com/api/users".to_string(),
         headers: HashMap::new(),
-        body: None,
+        body: RequestBody::None,
     };
 
     let (task, rx) = Task::fetch(req);
@@ -249,7 +249,8 @@ addEventListener("fetch", (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body = String::from_utf8_lossy(response.body.as_bytes().unwrap());
+    let body_bytes = response.body.collect().await.unwrap();
+    let body = String::from_utf8_lossy(&body_bytes);
     assert!(body.contains("Method: POST"));
     assert!(body.contains("URL: http://example.com/api/users"));
 }
@@ -273,10 +274,10 @@ addEventListener("fetch", (event) => {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let req = HttpRequest {
-        method: "GET".to_string(),
+        method: HttpMethod::Get,
         url: "http://localhost/".to_string(),
         headers: HashMap::new(),
-        body: None,
+        body: RequestBody::None,
     };
 
     let (task, rx) = Task::fetch(req);

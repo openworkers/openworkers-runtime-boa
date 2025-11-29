@@ -1,4 +1,5 @@
-use openworkers_runtime_boa::{HttpRequest, Script, Task, Worker};
+use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_runtime_boa::Worker;
 use std::collections::HashMap;
 
 #[tokio::main]
@@ -15,10 +16,10 @@ async fn main() {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let req = HttpRequest {
-        method: "GET".to_string(),
+        method: HttpMethod::Get,
         url: "http://localhost/test".to_string(),
         headers: HashMap::new(),
-        body: None,
+        body: RequestBody::None,
     };
 
     let (task, rx) = Task::fetch(req);
@@ -26,7 +27,7 @@ async fn main() {
 
     let response = rx.await.unwrap();
     println!("Status: {}", response.status);
-    if let Some(body) = response.body.as_bytes() {
-        println!("Body: {}", String::from_utf8_lossy(body));
+    if let Some(body) = response.body.collect().await {
+        println!("Body: {}", String::from_utf8_lossy(&body));
     }
 }

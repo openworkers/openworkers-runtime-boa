@@ -1,4 +1,5 @@
-use openworkers_runtime_boa::{Script, Worker};
+use openworkers_core::Script;
+use openworkers_runtime_boa::Worker;
 
 #[tokio::test]
 async fn test_settimeout_basic() {
@@ -11,7 +12,7 @@ async fn test_settimeout_basic() {
     "#;
 
     let script_obj = Script::new(script);
-    let worker = Worker::new(script_obj, None, None)
+    let _worker = Worker::new(script_obj, None, None)
         .await
         .expect("Worker should initialize");
 

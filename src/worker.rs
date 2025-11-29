@@ -788,10 +788,25 @@ impl Worker {
                     headers.len()
                 );
 
+                // Convert body to stream or None based on whether it's empty
+                let http_body = if body.is_empty() {
+                    ResponseBody::None
+                } else {
+                    let (tx, rx) = tokio::sync::mpsc::channel(1);
+                    let body_bytes = Bytes::from(body);
+
+                    // Send the body chunk in a background task
+                    tokio::spawn(async move {
+                        let _ = tx.send(Ok(body_bytes)).await;
+                    });
+
+                    ResponseBody::Stream(rx)
+                };
+
                 let response = HttpResponse {
                     status,
                     headers,
-                    body: ResponseBody::Bytes(Bytes::from(body)),
+                    body: http_body,
                 };
 
                 let _ = fetch_init.res_tx.send(response);

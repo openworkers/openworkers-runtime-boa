@@ -1,4 +1,5 @@
-use openworkers_runtime_boa::{HttpRequest, Script, Task, Worker};
+use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_runtime_boa::Worker;
 use std::collections::HashMap;
 
 #[tokio::main]
@@ -33,10 +34,10 @@ addEventListener('fetch', async (event) => {
     let mut worker = Worker::new(script, None, None).await.unwrap();
 
     let req = HttpRequest {
-        method: "GET".to_string(),
+        method: HttpMethod::Get,
         url: "http://localhost/test".to_string(),
         headers: HashMap::new(),
-        body: None,
+        body: RequestBody::None,
     };
 
     println!("=== Testing real fetch() ===\n");
@@ -47,8 +48,8 @@ addEventListener('fetch', async (event) => {
     let response = rx.await.unwrap();
     println!("\n=== Response ===");
     println!("Status: {}", response.status);
-    if let Some(body) = response.body.as_bytes() {
-        let body_str = String::from_utf8_lossy(body);
+    if let Some(body) = response.body.collect().await {
+        let body_str = String::from_utf8_lossy(&body);
         println!("Body length: {}", body_str.len());
         if body_str.contains("slideshow") {
             println!("✅ Real fetch worked! Got JSON from httpbin");

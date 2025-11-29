@@ -1946,8 +1946,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-core"
-version = "0.4.0"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.4.0#4d98c2540f5255e73738e55f5afcdf213a4833a6"
+version = "0.5.0"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.5.0#ecf16f77b45c9ac7ba3dbb0b6fbc92e1ae0d8957"
 dependencies = [
  "actix-web",
  "bytes",
@@ -1958,7 +1958,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-boa"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "actix-web",
  "boa_engine",
