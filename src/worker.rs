@@ -590,13 +590,13 @@ impl Worker {
         // Boa doesn't have a direct interrupt mechanism
     }
 
-    pub async fn exec(&mut self, mut event: Event) -> Result<(), TerminationReason> {
+    pub async fn exec(&mut self, mut task: Event) -> Result<(), TerminationReason> {
         // Check if aborted before starting
         if self.aborted.load(Ordering::SeqCst) {
             return Err(TerminationReason::Aborted);
         }
 
-        match event {
+        match task {
             Event::Fetch(ref mut init) => {
                 let fetch_init = init.take().ok_or(TerminationReason::Other(
                     "FetchInit already consumed".to_string(),
@@ -1102,8 +1102,8 @@ impl openworkers_core::Worker for Worker {
         Worker::new(script, limits).await
     }
 
-    async fn exec(&mut self, event: Event) -> Result<(), TerminationReason> {
-        Worker::exec(self, event).await
+    async fn exec(&mut self, task: Event) -> Result<(), TerminationReason> {
+        Worker::exec(self, task).await
     }
 
     fn abort(&mut self) {
