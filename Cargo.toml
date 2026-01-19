@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runtime-boa"
-version = "0.5.1"
+version = "0.10.0"
 edition = "2024"
 
 [features]
@@ -8,8 +8,8 @@ actix = ["dep:actix-web", "openworkers-core/actix"]
 
 [dependencies]
 # Common types
-# openworkers-core = { path = "../openworkers-core", features = ["testing"] }
-openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.5.1", features = ["testing"] }
+# openworkers-core = { path = "../openworkers-core" }
+openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.10.0" }
 
 # Boa JavaScript engine
 boa_engine = "0.21"

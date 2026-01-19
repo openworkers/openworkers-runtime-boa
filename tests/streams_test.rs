@@ -1,4 +1,4 @@
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_boa::Worker;
 use std::collections::HashMap;
 
@@ -27,7 +27,7 @@ async fn test_readable_stream_creation() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -36,8 +36,8 @@ async fn test_readable_stream_creation() {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
@@ -64,7 +64,7 @@ async fn test_readable_stream_locked() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -73,8 +73,8 @@ async fn test_readable_stream_locked() {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     let body_bytes = response.body.collect().await.unwrap();
@@ -93,7 +93,7 @@ async fn test_response_body_is_readable_stream() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -102,8 +102,8 @@ async fn test_response_body_is_readable_stream() {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     let body_bytes = response.body.collect().await.unwrap();
@@ -137,7 +137,7 @@ async fn test_readable_stream_read_chunks() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -146,8 +146,8 @@ async fn test_readable_stream_read_chunks() {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     let body_bytes = response.body.collect().await.unwrap();

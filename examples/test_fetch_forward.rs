@@ -1,4 +1,4 @@
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_boa::Worker;
 use std::collections::HashMap;
 
@@ -33,7 +33,7 @@ async function handleRequest(request) {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     println!("=== Testing /test route with fetch forward ===\n");
 
@@ -44,12 +44,13 @@ async function handleRequest(request) {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
+    let (event, rx) = Event::fetch(req);
 
-    match worker.exec(task).await {
+    match worker.exec(event).await {
         Ok(_) => match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
             Ok(Ok(response)) => {
                 println!("Status: {}", response.status);
+
                 if let Some(body) = response.body.collect().await {
                     let body_str = String::from_utf8_lossy(&body);
                     println!("Body length: {}", body_str.len());
@@ -60,7 +61,7 @@ async function handleRequest(request) {
                 println!("Error receiving response: {:?}", e);
             }
             Err(_) => {
-                println!("❌ TIMEOUT waiting for response!");
+                println!("TIMEOUT waiting for response!");
             }
         },
         Err(e) => {

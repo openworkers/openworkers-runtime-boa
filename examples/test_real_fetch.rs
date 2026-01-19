@@ -1,4 +1,4 @@
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_boa::Worker;
 use std::collections::HashMap;
 
@@ -31,7 +31,7 @@ addEventListener('fetch', async (event) => {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -42,17 +42,19 @@ addEventListener('fetch', async (event) => {
 
     println!("=== Testing real fetch() ===\n");
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     println!("\n=== Response ===");
     println!("Status: {}", response.status);
+
     if let Some(body) = response.body.collect().await {
         let body_str = String::from_utf8_lossy(&body);
         println!("Body length: {}", body_str.len());
+
         if body_str.contains("slideshow") {
-            println!("✅ Real fetch worked! Got JSON from httpbin");
+            println!("Real fetch worked! Got JSON from httpbin");
         } else {
             println!("Body preview: {}", &body_str[..body_str.len().min(200)]);
         }

@@ -1,7 +1,7 @@
 //! Additional integration tests for boa runtime
 //! Basic tests are generated from openworkers_core::generate_worker_tests!
 
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_boa::Worker;
 use std::collections::HashMap;
 
@@ -15,7 +15,7 @@ async fn test_large_body() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -24,8 +24,8 @@ async fn test_large_body() {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
@@ -40,7 +40,7 @@ async fn test_no_handler_registered() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -49,8 +49,8 @@ async fn test_no_handler_registered() {
         body: RequestBody::None,
     };
 
-    let (task, _rx) = Task::fetch(req);
-    let result = worker.exec(task).await;
+    let (event, _rx) = Event::fetch(req);
+    let result = worker.exec(event).await;
 
     assert!(result.is_err());
 }
@@ -68,7 +68,7 @@ async fn test_promise_response() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -77,8 +77,8 @@ async fn test_promise_response() {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
@@ -97,7 +97,7 @@ addEventListener("fetch", (event) => {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -106,8 +106,8 @@ addEventListener("fetch", (event) => {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
@@ -135,7 +135,7 @@ async function handleRequest() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -144,8 +144,8 @@ async function handleRequest() {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 500);
@@ -164,7 +164,7 @@ addEventListener("fetch", async (event) => {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -173,8 +173,8 @@ addEventListener("fetch", async (event) => {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
@@ -198,7 +198,7 @@ addEventListener("fetch", (event) => {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let mut headers = HashMap::new();
     headers.insert("authorization".to_string(), "Bearer token123".to_string());
@@ -211,8 +211,8 @@ addEventListener("fetch", (event) => {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
@@ -234,7 +234,7 @@ addEventListener("fetch", (event) => {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Post,
@@ -243,8 +243,8 @@ addEventListener("fetch", (event) => {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
@@ -271,7 +271,7 @@ addEventListener("fetch", (event) => {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -280,8 +280,8 @@ addEventListener("fetch", (event) => {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);

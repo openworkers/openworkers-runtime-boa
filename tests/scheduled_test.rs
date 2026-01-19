@@ -1,4 +1,4 @@
-use openworkers_core::{Script, Task};
+use openworkers_core::{Event, Script};
 use openworkers_runtime_boa::Worker;
 
 #[tokio::test]
@@ -15,13 +15,14 @@ async fn test_scheduled_event() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
-    let (task, rx) = Task::scheduled(1234567890);
-    let result = worker.exec(task).await;
+    let (event, rx) = Event::from_schedule("test-task-1".to_string(), 1234567890);
+    let result = worker.exec(event).await;
 
     assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
-    rx.await.unwrap(); // Should not timeout
+    let task_result = rx.await.unwrap();
+    assert!(task_result.success);
 }
 
 #[tokio::test]
@@ -39,13 +40,14 @@ async fn test_scheduled_with_waituntil() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
-    let (task, rx) = Task::scheduled(1234567890);
-    let result = worker.exec(task).await;
+    let (event, rx) = Event::from_schedule("test-task-2".to_string(), 1234567890);
+    let result = worker.exec(event).await;
 
     assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
-    rx.await.unwrap();
+    let task_result = rx.await.unwrap();
+    assert!(task_result.success);
 }
 
 #[tokio::test]
@@ -59,11 +61,12 @@ async fn test_scheduled_async_handler() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
-    let (task, rx) = Task::scheduled(1234567890);
-    let result = worker.exec(task).await;
+    let (event, rx) = Event::from_schedule("test-task-3".to_string(), 1234567890);
+    let result = worker.exec(event).await;
 
     assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
-    rx.await.unwrap();
+    let task_result = rx.await.unwrap();
+    assert!(task_result.success);
 }

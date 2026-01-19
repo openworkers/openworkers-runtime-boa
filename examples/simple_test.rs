@@ -1,4 +1,4 @@
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_boa::Worker;
 use std::collections::HashMap;
 
@@ -13,7 +13,7 @@ async fn main() {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -22,11 +22,12 @@ async fn main() {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
     println!("Status: {}", response.status);
+
     if let Some(body) = response.body.collect().await {
         println!("Body: {}", String::from_utf8_lossy(&body));
     }

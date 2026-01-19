@@ -6,9 +6,9 @@ mod worker;
 pub use runtime::TokioJobQueue;
 pub use worker::Worker;
 
-// Re-export common types from openworkers-common
+// Re-export common types from openworkers-core
 pub use openworkers_core::{
-    FetchInit, HttpMethod, HttpRequest, HttpResponse, HttpResponseMeta, LogEvent, LogLevel,
-    LogSender, ResponseSender, RuntimeLimits, ScheduledInit, Script, Task, TaskType,
+    Event, EventType, FetchInit, HttpMethod, HttpRequest, HttpResponse, HttpResponseMeta, LogEvent,
+    LogLevel, ResponseSender, RuntimeLimits, Script, TaskInit, TaskResult, TaskSource,
     TerminationReason, Worker as WorkerTrait,
 };

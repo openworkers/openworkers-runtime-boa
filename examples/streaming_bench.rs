@@ -1,4 +1,4 @@
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_boa::Worker;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -23,8 +23,8 @@ async fn bench_local_stream(chunk_count: usize, chunk_size: usize) -> (Duration,
         chunk_size, chunk_count
     );
 
-    let script = Script::new(&code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let script = Script::new(code.as_str());
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let req = HttpRequest {
         method: HttpMethod::Get,
@@ -35,8 +35,8 @@ async fn bench_local_stream(chunk_count: usize, chunk_size: usize) -> (Duration,
 
     let start = Instant::now();
 
-    let (task, rx) = Task::fetch(req);
-    worker.exec(task).await.unwrap();
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
     let response = rx.await.unwrap();
 
     let total_bytes = response.body.collect().await.map(|b| b.len()).unwrap_or(0);
@@ -53,7 +53,7 @@ async fn bench_buffered_response(iterations: u32) -> Duration {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let start = Instant::now();
 
@@ -65,8 +65,8 @@ async fn bench_buffered_response(iterations: u32) -> Duration {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(req);
-        worker.exec(task).await.unwrap();
+        let (event, rx) = Event::fetch(req);
+        worker.exec(event).await.unwrap();
         let response = rx.await.unwrap();
         assert!(!response.body.is_stream());
     }
@@ -85,7 +85,7 @@ async fn bench_json_response(iterations: u32) -> Duration {
     "#;
 
     let script = Script::new(code);
-    let mut worker = Worker::new(script, None, None).await.unwrap();
+    let mut worker = Worker::new(script, None).await.unwrap();
 
     let start = Instant::now();
 
@@ -97,8 +97,8 @@ async fn bench_json_response(iterations: u32) -> Duration {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(req);
-        worker.exec(task).await.unwrap();
+        let (event, rx) = Event::fetch(req);
+        worker.exec(event).await.unwrap();
         let _ = rx.await.unwrap();
     }
 
@@ -107,7 +107,7 @@ async fn bench_json_response(iterations: u32) -> Duration {
 
 #[tokio::main]
 async fn main() {
-    println!("🚀 OpenWorkers Boa Streaming Benchmark\n");
+    println!("OpenWorkers Boa Streaming Benchmark\n");
     println!("========================================\n");
 
     // Warmup
@@ -116,7 +116,7 @@ async fn main() {
     println!();
 
     // Benchmark 1: Buffered responses (local, no network)
-    println!("📦 Buffered Response (local, no network):");
+    println!("Buffered Response (local, no network):");
     let iterations = 1000;
     let elapsed = bench_buffered_response(iterations).await;
     let per_request = elapsed / iterations;
@@ -129,7 +129,7 @@ async fn main() {
     );
 
     // Benchmark 2: JSON responses
-    println!("📄 JSON Response (local, no network):");
+    println!("JSON Response (local, no network):");
     let iterations = 1000;
     let elapsed = bench_json_response(iterations).await;
     let per_request = elapsed / iterations;
@@ -142,7 +142,8 @@ async fn main() {
     );
 
     // Benchmark 3: Local JS stream (no network)
-    println!("🔄 Local JS ReadableStream (no network):");
+    println!("Local JS ReadableStream (no network):");
+
     for (chunks, chunk_size) in [(10, 1024), (100, 1024), (10, 10240)] {
         let (elapsed, total_bytes) = bench_local_stream(chunks, chunk_size).await;
         let throughput = if elapsed.as_secs_f64() > 0.0 {
@@ -151,7 +152,7 @@ async fn main() {
             0.0
         };
         println!(
-            "  {} chunks × {} bytes = {} KB in {:.2?} ({:.1} MB/s)",
+            "  {} chunks x {} bytes = {} KB in {:.2?} ({:.1} MB/s)",
             chunks,
             chunk_size,
             total_bytes / 1024,
@@ -161,9 +162,9 @@ async fn main() {
     }
 
     println!("\n========================================");
-    println!("📝 Summary:");
+    println!("Summary:");
     println!("  - Boa is an interpreter (no JIT), expect slower than V8/JSC");
     println!("  - Good for lightweight/embedded use cases");
     println!("  - Pure Rust implementation (no native deps)");
-    println!("\n✅ Benchmark complete!");
+    println!("\nBenchmark complete!");
 }

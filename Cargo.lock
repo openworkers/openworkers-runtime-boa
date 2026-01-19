@@ -1946,19 +1946,20 @@ dependencies = [
 
 [[package]]
 name = "openworkers-core"
-version = "0.5.1"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.5.1#147da6d6653a52527c4a38d8262cf6150c177499"
+version = "0.10.0"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.10.0#5ba3a80392ca5e77744ceabf0a68836c1903dd5a"
 dependencies = [
  "actix-web",
  "bytes",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-stream",
 ]
 
 [[package]]
 name = "openworkers-runtime-boa"
-version = "0.5.1"
+version = "0.10.0"
 dependencies = [
  "actix-web",
  "boa_engine",

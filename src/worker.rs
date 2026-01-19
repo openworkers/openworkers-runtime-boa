@@ -5,7 +5,7 @@ use boa_runtime::RuntimeExtension;
 use boa_runtime::fetch::{Fetcher, request::JsRequest, response::JsResponse};
 use bytes::Bytes;
 use openworkers_core::{
-    HttpResponse, LogSender, ResponseBody, RuntimeLimits, Script, Task, TerminationReason,
+    Event, HttpResponse, ResponseBody, RuntimeLimits, Script, TaskResult, TerminationReason,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -77,7 +77,6 @@ pub struct Worker {
 impl Worker {
     pub async fn new(
         script: Script,
-        _log_tx: Option<LogSender>,
         _limits: Option<RuntimeLimits>,
     ) -> Result<Self, TerminationReason> {
         let mut context = Context::default();
@@ -548,11 +547,15 @@ impl Worker {
             .map_err(|e| TerminationReason::InitializationError(format!("Setup failed: {}", e)))?;
 
         // Evaluate user script
-        context
-            .eval(Source::from_bytes(&script.code))
-            .map_err(|e| {
-                TerminationReason::Exception(format!("Script evaluation failed: {}", e))
-            })?;
+        let js_code = script.code.as_js().ok_or_else(|| {
+            TerminationReason::InitializationError(
+                "Boa runtime only supports JavaScript code".to_string(),
+            )
+        })?;
+
+        context.eval(Source::from_bytes(js_code)).map_err(|e| {
+            TerminationReason::Exception(format!("Script evaluation failed: {}", e))
+        })?;
 
         Ok(Self {
             context,
@@ -566,14 +569,14 @@ impl Worker {
         // Boa doesn't have a direct interrupt mechanism
     }
 
-    pub async fn exec(&mut self, mut task: Task) -> Result<(), TerminationReason> {
+    pub async fn exec(&mut self, mut event: Event) -> Result<(), TerminationReason> {
         // Check if aborted before starting
         if self.aborted.load(Ordering::SeqCst) {
             return Err(TerminationReason::Aborted);
         }
 
-        match task {
-            Task::Fetch(ref mut init) => {
+        match event {
+            Event::Fetch(ref mut init) => {
                 let fetch_init = init.take().ok_or(TerminationReason::Other(
                     "FetchInit already consumed".to_string(),
                 ))?;
@@ -812,42 +815,80 @@ impl Worker {
                 let _ = fetch_init.res_tx.send(response);
                 Ok(())
             }
-            Task::Scheduled(ref mut init) => {
-                let scheduled_init = init.take().ok_or(TerminationReason::Other(
-                    "ScheduledInit already consumed".to_string(),
+            Event::Task(ref mut init) => {
+                let task_init = init.take().ok_or(TerminationReason::Other(
+                    "TaskInit already consumed".to_string(),
                 ))?;
 
-                // Trigger scheduled event
+                // Extract scheduled time from source if available
+                let scheduled_time = match &task_init.source {
+                    Some(openworkers_core::TaskSource::Schedule { time }) => *time,
+                    _ => 0,
+                };
+
+                // Serialize payload for JS
+                let payload_json = task_init
+                    .payload
+                    .as_ref()
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "null".to_string());
+
+                // Trigger task event
                 let trigger_script = format!(
                     r#"
                     (async function() {{
                         if (typeof globalThis.__scheduledHandler === 'function') {{
                             const event = {{
-                                scheduledTime: {},
+                                scheduledTime: {scheduled_time},
+                                taskId: "{task_id}",
+                                payload: {payload_json},
+                                attempt: {attempt},
                                 cron: '',
                                 waitUntil: function(promise) {{
                                     this._promise = promise;
-                                }}
+                                }},
+                                _result: {{ success: true, data: null, error: null }}
                             }};
 
-                            const result = globalThis.__scheduledHandler(event);
+                            try {{
+                                const result = globalThis.__scheduledHandler(event);
 
-                            // Wait for the handler to complete
-                            if (result && typeof result.then === 'function') {{
-                                await result;
+                                // Wait for the handler to complete
+                                if (result && typeof result.then === 'function') {{
+                                    const resolved = await result;
+                                    if (resolved !== undefined) {{
+                                        event._result.data = resolved;
+                                    }}
+                                }}
+
+                                // Wait for waitUntil promise if provided
+                                if (event._promise && typeof event._promise.then === 'function') {{
+                                    await event._promise;
+                                }}
+
+                                globalThis.__lastTaskResult = event._result;
+                                return true;
+                            }} catch (e) {{
+                                globalThis.__lastTaskResult = {{
+                                    success: false,
+                                    data: null,
+                                    error: e.message || String(e)
+                                }};
+                                return false;
                             }}
-
-                            // Wait for waitUntil promise if provided
-                            if (event._promise && typeof event._promise.then === 'function') {{
-                                await event._promise;
-                            }}
-
-                            return true;
                         }}
+                        globalThis.__lastTaskResult = {{
+                            success: false,
+                            data: null,
+                            error: "No scheduled handler registered"
+                        }};
                         return false;
                     }})()
                     "#,
-                    scheduled_init.time
+                    scheduled_time = scheduled_time,
+                    task_id = task_init.task_id,
+                    payload_json = payload_json,
+                    attempt = task_init.attempt,
                 );
 
                 // Execute the trigger (returns a Promise)
@@ -856,7 +897,7 @@ impl Worker {
                     .eval(Source::from_bytes(&trigger_script))
                     .map_err(|e| {
                         TerminationReason::Exception(format!(
-                            "Scheduled handler execution failed: {}",
+                            "Task handler execution failed: {}",
                             e
                         ))
                     })?;
@@ -866,6 +907,7 @@ impl Worker {
                     if let Ok(promise) = JsPromise::from_object(promise_obj.clone()) {
                         for _ in 0..200 {
                             let _ = self.context.run_jobs();
+
                             match promise.state() {
                                 boa_engine::builtins::promise::PromiseState::Pending => {
                                     tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -878,8 +920,10 @@ impl Worker {
                                         .to_string(&mut self.context)
                                         .map(|s| s.to_std_string_escaped())
                                         .unwrap_or_else(|_| "Unknown error".to_string());
+
+                                    let _ = task_init.res_tx.send(TaskResult::err(err_str.clone()));
                                     return Err(TerminationReason::Exception(format!(
-                                        "Scheduled promise rejected: {}",
+                                        "Task promise rejected: {}",
                                         err_str
                                     )));
                                 }
@@ -888,8 +932,41 @@ impl Worker {
                     }
                 }
 
-                // Send success signal through channel
-                let _ = scheduled_init.res_tx.send(());
+                // Read result from global variable
+                let task_result = match self.context.global_object().get(
+                    boa_engine::js_string!("__lastTaskResult"),
+                    &mut self.context,
+                ) {
+                    Ok(result_val) => {
+                        if let Some(obj) = result_val.as_object() {
+                            let success = obj
+                                .get(boa_engine::js_string!("success"), &mut self.context)
+                                .ok()
+                                .map(|v| v.to_boolean())
+                                .unwrap_or(true);
+
+                            if success {
+                                TaskResult::success()
+                            } else {
+                                let error = obj
+                                    .get(boa_engine::js_string!("error"), &mut self.context)
+                                    .ok()
+                                    .filter(|v| !v.is_null_or_undefined())
+                                    .and_then(|v| v.to_string(&mut self.context).ok())
+                                    .map(|s| s.to_std_string_escaped())
+                                    .unwrap_or_else(|| "Unknown error".to_string());
+
+                                TaskResult::err(error)
+                            }
+                        } else {
+                            TaskResult::success()
+                        }
+                    }
+                    Err(_) => TaskResult::success(),
+                };
+
+                // Send result through channel
+                let _ = task_init.res_tx.send(task_result);
                 Ok(())
             }
         }
@@ -897,16 +974,12 @@ impl Worker {
 }
 
 impl openworkers_core::Worker for Worker {
-    async fn new(
-        script: Script,
-        log_tx: Option<LogSender>,
-        limits: Option<RuntimeLimits>,
-    ) -> Result<Self, TerminationReason> {
-        Worker::new(script, log_tx, limits).await
+    async fn new(script: Script, limits: Option<RuntimeLimits>) -> Result<Self, TerminationReason> {
+        Worker::new(script, limits).await
     }
 
-    async fn exec(&mut self, task: Task) -> Result<(), TerminationReason> {
-        Worker::exec(self, task).await
+    async fn exec(&mut self, event: Event) -> Result<(), TerminationReason> {
+        Worker::exec(self, event).await
     }
 
     fn abort(&mut self) {

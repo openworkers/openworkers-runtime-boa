@@ -12,7 +12,7 @@ async fn test_settimeout_basic() {
     "#;
 
     let script_obj = Script::new(script);
-    let _worker = Worker::new(script_obj, None, None)
+    let _worker = Worker::new(script_obj, None)
         .await
         .expect("Worker should initialize");
 
