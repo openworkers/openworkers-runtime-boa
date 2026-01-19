@@ -5,8 +5,8 @@ use boa_runtime::RuntimeExtension;
 use boa_runtime::fetch::{Fetcher, request::JsRequest, response::JsResponse};
 use bytes::Bytes;
 use openworkers_core::{
-    Event, HttpResponse, RequestBody, ResponseBody, RuntimeLimits, Script, TaskResult,
-    TerminationReason,
+    DefaultOps, Event, HttpResponse, OperationsHandle, RequestBody, ResponseBody, RuntimeLimits,
+    Script, TaskResult, TerminationReason,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -73,12 +73,19 @@ impl Fetcher for SpawnBlockingFetcher {
 pub struct Worker {
     context: Context,
     aborted: Arc<AtomicBool>,
+    #[allow(dead_code)]
+    ops: OperationsHandle,
 }
 
 impl Worker {
-    pub async fn new(
+    /// Create a new worker with an OperationsHandler
+    ///
+    /// All operations (fetch, log, etc.) go through the runner's OperationsHandler.
+    /// Note: Bindings are not yet wired up to JS in the Boa runtime.
+    pub async fn new_with_ops(
         script: Script,
         _limits: Option<RuntimeLimits>,
+        ops: OperationsHandle,
     ) -> Result<Self, TerminationReason> {
         let mut context = Context::default();
 
@@ -561,7 +568,20 @@ impl Worker {
         Ok(Self {
             context,
             aborted: Arc::new(AtomicBool::new(false)),
+            ops,
         })
+    }
+
+    /// Create a new worker with default operations (for testing)
+    ///
+    /// Note: DefaultOps returns errors for fetch operations.
+    /// In production, use `new_with_ops` with a real OperationsHandler.
+    pub async fn new(
+        script: Script,
+        limits: Option<RuntimeLimits>,
+    ) -> Result<Self, TerminationReason> {
+        let ops: OperationsHandle = Arc::new(DefaultOps);
+        Self::new_with_ops(script, limits, ops).await
     }
 
     /// Abort the worker execution
