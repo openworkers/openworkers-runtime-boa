@@ -5,7 +5,8 @@ use boa_runtime::RuntimeExtension;
 use boa_runtime::fetch::{Fetcher, request::JsRequest, response::JsResponse};
 use bytes::Bytes;
 use openworkers_core::{
-    Event, HttpResponse, ResponseBody, RuntimeLimits, Script, TaskResult, TerminationReason,
+    Event, HttpResponse, RequestBody, ResponseBody, RuntimeLimits, Script, TaskResult,
+    TerminationReason,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -580,20 +581,123 @@ impl Worker {
                 let fetch_init = init.take().ok_or(TerminationReason::Other(
                     "FetchInit already consumed".to_string(),
                 ))?;
-                let req = &fetch_init.req;
+                let req = fetch_init.req;
+
+                // Collect request body (handles None, Bytes, and Stream)
+                let body_bytes: Option<Bytes> = match req.body {
+                    RequestBody::None => None,
+                    RequestBody::Bytes(b) => Some(b),
+                    RequestBody::Stream(mut rx) => {
+                        let mut chunks = Vec::new();
+
+                        while let Some(result) = rx.recv().await {
+                            if let Ok(bytes) = result {
+                                chunks.push(bytes);
+                            }
+                        }
+
+                        if chunks.is_empty() {
+                            None
+                        } else {
+                            let total: Vec<u8> = chunks.iter().flat_map(|b| b.to_vec()).collect();
+                            Some(Bytes::from(total))
+                        }
+                    }
+                };
+
+                // Convert body to string for JS (UTF-8, fallback to latin1 for binary)
+                let body_for_js: serde_json::Value = match &body_bytes {
+                    Some(b) => {
+                        match std::str::from_utf8(b) {
+                            Ok(s) => serde_json::Value::String(s.to_string()),
+                            // For binary data, encode as array of bytes
+                            Err(_) => serde_json::Value::Array(
+                                b.iter()
+                                    .map(|&byte| serde_json::Value::Number(byte.into()))
+                                    .collect(),
+                            ),
+                        }
+                    }
+                    None => serde_json::Value::Null,
+                };
 
                 // Create request object as JSON
                 let request_json = serde_json::json!({
                     "method": req.method,
                     "url": req.url,
                     "headers": req.headers,
+                    "body": body_for_js,
                 });
 
                 // Trigger fetch event - store response in global variable
                 let trigger_script = format!(
                     r#"
                     (async function() {{
-                        const request = {request_json};
+                        const requestData = {request_json};
+
+                        // Build Request-like object with body methods
+                        const request = {{
+                            method: requestData.method,
+                            url: requestData.url,
+                            headers: requestData.headers,
+                            _body: requestData.body,
+                            _bodyUsed: false,
+
+                            get bodyUsed() {{
+                                return this._bodyUsed;
+                            }},
+
+                            async text() {{
+                                if (this._bodyUsed) throw new TypeError('Body already consumed');
+                                this._bodyUsed = true;
+                                if (this._body === null) return '';
+                                if (typeof this._body === 'string') return this._body;
+                                // Array of bytes -> string
+                                if (Array.isArray(this._body)) {{
+                                    return String.fromCharCode.apply(null, this._body);
+                                }}
+                                return String(this._body);
+                            }},
+
+                            async json() {{
+                                const text = await this.text();
+                                return JSON.parse(text);
+                            }},
+
+                            async arrayBuffer() {{
+                                if (this._bodyUsed) throw new TypeError('Body already consumed');
+                                this._bodyUsed = true;
+                                if (this._body === null) return new ArrayBuffer(0);
+                                let bytes;
+                                if (typeof this._body === 'string') {{
+                                    bytes = new TextEncoder().encode(this._body);
+                                }} else if (Array.isArray(this._body)) {{
+                                    bytes = new Uint8Array(this._body);
+                                }} else {{
+                                    bytes = new TextEncoder().encode(String(this._body));
+                                }}
+                                return bytes.buffer;
+                            }},
+
+                            async bytes() {{
+                                const buffer = await this.arrayBuffer();
+                                return new Uint8Array(buffer);
+                            }},
+
+                            clone() {{
+                                if (this._bodyUsed) throw new TypeError('Cannot clone consumed request');
+                                return {{
+                                    ...this,
+                                    _bodyUsed: false,
+                                    text: this.text,
+                                    json: this.json,
+                                    arrayBuffer: this.arrayBuffer,
+                                    bytes: this.bytes,
+                                    clone: this.clone
+                                }};
+                            }}
+                        }};
+
                         if (typeof globalThis.__fetchHandler === 'function') {{
                             const event = {{
                                 request: request,

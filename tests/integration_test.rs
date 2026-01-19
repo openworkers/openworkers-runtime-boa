@@ -1,6 +1,7 @@
 //! Additional integration tests for boa runtime
 //! Basic tests are generated from openworkers_core::generate_worker_tests!
 
+use bytes::Bytes;
 use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_boa::Worker;
 use std::collections::HashMap;
@@ -296,4 +297,93 @@ addEventListener("fetch", (event) => {
         headers_map.get("x-custom-header"),
         Some(&"custom-value".to_string())
     );
+}
+
+#[tokio::test]
+async fn test_request_body_text() {
+    let code = r#"
+addEventListener("fetch", async (event) => {
+    const body = await event.request.text();
+    event.respondWith(new Response(`Body: ${body}`, { status: 200 }));
+});
+    "#;
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let req = HttpRequest {
+        method: HttpMethod::Post,
+        url: "http://localhost/api".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::Bytes(Bytes::from("Hello from request body")),
+    };
+
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
+
+    let response = rx.await.unwrap();
+    assert_eq!(response.status, 200);
+
+    let body_bytes = response.body.collect().await.unwrap();
+    let body = String::from_utf8_lossy(&body_bytes);
+    assert_eq!(body, "Body: Hello from request body");
+}
+
+#[tokio::test]
+async fn test_request_body_json() {
+    let code = r#"
+addEventListener("fetch", async (event) => {
+    const data = await event.request.json();
+    event.respondWith(new Response(`Name: ${data.name}, Age: ${data.age}`, { status: 200 }));
+});
+    "#;
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let req = HttpRequest {
+        method: HttpMethod::Post,
+        url: "http://localhost/api".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::Bytes(Bytes::from(r#"{"name":"Alice","age":30}"#)),
+    };
+
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
+
+    let response = rx.await.unwrap();
+    assert_eq!(response.status, 200);
+
+    let body_bytes = response.body.collect().await.unwrap();
+    let body = String::from_utf8_lossy(&body_bytes);
+    assert_eq!(body, "Name: Alice, Age: 30");
+}
+
+#[tokio::test]
+async fn test_request_body_empty() {
+    let code = r#"
+addEventListener("fetch", async (event) => {
+    const body = await event.request.text();
+    const isEmpty = body === '';
+    event.respondWith(new Response(`Empty: ${isEmpty}`, { status: 200 }));
+});
+    "#;
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let req = HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    };
+
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
+
+    let response = rx.await.unwrap();
+    let body_bytes = response.body.collect().await.unwrap();
+    let body = String::from_utf8_lossy(&body_bytes);
+    assert_eq!(body, "Empty: true");
 }
