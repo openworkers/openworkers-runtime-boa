@@ -5,19 +5,35 @@ use boa_runtime::RuntimeExtension;
 use boa_runtime::fetch::{Fetcher, request::JsRequest, response::JsResponse};
 use bytes::Bytes;
 use openworkers_core::{
-    DefaultOps, Event, HttpResponse, OperationsHandle, RequestBody, ResponseBody, RuntimeLimits,
-    Script, TaskResult, TerminationReason,
+    DefaultOps, Event, HttpMethod, HttpRequest, HttpResponse, LogLevel, Operation, OperationResult,
+    OperationsHandle, RequestBody, ResponseBody, RuntimeLimits, Script, TaskResult,
+    TerminationReason,
 };
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// Custom fetcher that uses spawn_blocking to avoid blocking tokio runtime
-#[derive(Clone, Debug, Trace, Finalize, JsData, Default)]
-struct SpawnBlockingFetcher;
+/// Fetcher that routes all HTTP requests through OperationsHandler.
+/// This ensures the runtime has NO direct network access - the runner controls all I/O.
+#[derive(Clone, Finalize, JsData)]
+struct OpsFetcher {
+    ops: OperationsHandle,
+}
 
-impl Fetcher for SpawnBlockingFetcher {
+// Manual Trace impl since OperationsHandle (Arc) is safe to ignore
+unsafe impl Trace for OpsFetcher {
+    boa_gc::custom_trace!(this, mark, {});
+}
+
+impl std::fmt::Debug for OpsFetcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpsFetcher").finish()
+    }
+}
+
+impl Fetcher for OpsFetcher {
     async fn fetch(
         self: Rc<Self>,
         request: JsRequest,
@@ -26,47 +42,83 @@ impl Fetcher for SpawnBlockingFetcher {
         let req = request.into_inner();
         let url = req.uri().to_string();
         let url_for_result = url.clone();
-        let method = req.method().clone();
-        let headers: Vec<_> = req
+
+        // Convert http::Method to HttpMethod
+        let method = match req.method().as_str() {
+            "GET" => HttpMethod::Get,
+            "POST" => HttpMethod::Post,
+            "PUT" => HttpMethod::Put,
+            "DELETE" => HttpMethod::Delete,
+            "PATCH" => HttpMethod::Patch,
+            "HEAD" => HttpMethod::Head,
+            "OPTIONS" => HttpMethod::Options,
+            _ => HttpMethod::Get,
+        };
+
+        // Convert headers
+        let headers: HashMap<String, String> = req
             .headers()
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
-        let body = req.body().to_vec();
 
-        // Execute blocking fetch in a separate thread
-        let result = tokio::task::spawn_blocking(move || {
-            let client = reqwest::blocking::Client::new();
-            let mut req_builder = client.request(method, &url);
+        // Convert body
+        let body = if req.body().is_empty() {
+            RequestBody::None
+        } else {
+            RequestBody::Bytes(Bytes::from(req.body().to_vec()))
+        };
 
-            for (key, value) in headers {
-                req_builder = req_builder.header(key, value);
+        let http_request = HttpRequest {
+            method,
+            url,
+            headers,
+            body,
+        };
+
+        // Route through OperationsHandler
+        let result = self.ops.handle(Operation::Fetch(http_request)).await;
+
+        match result {
+            OperationResult::Http(Ok(response)) => {
+                // Collect response body
+                let body_bytes = match response.body {
+                    ResponseBody::None => Vec::new(),
+                    ResponseBody::Bytes(b) => b.to_vec(),
+                    ResponseBody::Stream(mut rx) => {
+                        let mut chunks = Vec::new();
+
+                        while let Some(result) = rx.recv().await {
+                            if let Ok(bytes) = result {
+                                chunks.extend(bytes.to_vec());
+                            }
+                        }
+
+                        chunks
+                    }
+                };
+
+                // Build http::Response for JsResponse
+                let mut builder = http::Response::builder().status(response.status);
+
+                for (key, value) in response.headers {
+                    builder = builder.header(key, value);
+                }
+
+                builder
+                    .body(body_bytes)
+                    .map_err(boa_engine::JsError::from_rust)
+                    .map(|http_response| {
+                        JsResponse::basic(JsString::from(url_for_result), http_response)
+                    })
             }
-
-            let resp = req_builder.body(body).send()?;
-            let status = resp.status();
-            let resp_headers = resp.headers().clone();
-            let bytes = resp.bytes()?;
-
-            Ok::<_, reqwest::Error>((status, resp_headers, bytes))
-        })
-        .await
-        .map_err(|e| boa_engine::JsError::from_rust(e))?
-        .map_err(boa_engine::JsError::from_rust)?;
-
-        let (status, resp_headers, bytes) = result;
-
-        let mut builder = http::Response::builder().status(status.as_u16());
-        for k in resp_headers.keys() {
-            for v in resp_headers.get_all(k) {
-                builder = builder.header(k.as_str(), v);
+            OperationResult::Http(Err(e)) => {
+                Err(boa_engine::JsNativeError::error().with_message(e).into())
             }
+            _ => Err(boa_engine::JsNativeError::error()
+                .with_message("Unexpected operation result")
+                .into()),
         }
-
-        builder
-            .body(bytes.to_vec())
-            .map_err(boa_engine::JsError::from_rust)
-            .map(|http_response| JsResponse::basic(JsString::from(url_for_result), http_response))
     }
 }
 
@@ -89,12 +141,25 @@ impl Worker {
     ) -> Result<Self, TerminationReason> {
         let mut context = Context::default();
 
-        // Register console
-        boa_runtime::extensions::ConsoleExtension::default()
-            .register(None, &mut context)
-            .map_err(|e| {
-                TerminationReason::InitializationError(format!("Failed to register console: {}", e))
-            })?;
+        // Setup console that routes to OperationsHandler
+        // We use our own implementation instead of boa_runtime::ConsoleExtension
+        // so that logs go through the runner, not directly to stdout/stderr
+        setup_console_with_ops(&mut context, ops.clone()).map_err(|e| {
+            TerminationReason::InitializationError(format!("Failed to register console: {}", e))
+        })?;
+
+        // Setup crypto (getRandomValues, randomUUID, subtle.digest)
+        setup_crypto(&mut context).map_err(|e| {
+            TerminationReason::InitializationError(format!("Failed to register crypto: {}", e))
+        })?;
+
+        // Setup TextEncoder/TextDecoder
+        setup_text_encoding(&mut context).map_err(|e| {
+            TerminationReason::InitializationError(format!(
+                "Failed to register text encoding: {}",
+                e
+            ))
+        })?;
 
         // Register timers
         boa_runtime::extensions::TimeoutExtension
@@ -110,8 +175,9 @@ impl Worker {
                 TerminationReason::InitializationError(format!("Failed to register URL: {}", e))
             })?;
 
-        // Register fetch with our custom fetcher using spawn_blocking
-        boa_runtime::extensions::FetchExtension(SpawnBlockingFetcher)
+        // Register fetch with OpsFetcher that routes through OperationsHandler
+        // This ensures the runtime has NO direct network access
+        boa_runtime::extensions::FetchExtension(OpsFetcher { ops: ops.clone() })
             .register(None, &mut context)
             .map_err(|e| {
                 TerminationReason::InitializationError(format!("Failed to register fetch: {}", e))
@@ -1095,6 +1161,347 @@ impl Worker {
             }
         }
     }
+}
+
+/// Setup console that routes logs through OperationsHandler.
+/// This ensures logs go through the runner, not directly to stdout/stderr.
+fn setup_console_with_ops(
+    context: &mut Context,
+    ops: OperationsHandle,
+) -> Result<(), boa_engine::JsError> {
+    use boa_engine::{JsValue, NativeFunction, js_string, property::Attribute};
+
+    // Helper to create a log function for a specific level
+    fn make_log_fn(ops: OperationsHandle, level: LogLevel) -> NativeFunction {
+        // SAFETY: The closure captures only Send+Sync types (Arc, LogLevel)
+        // and doesn't hold references to local stack variables
+        unsafe {
+            NativeFunction::from_closure(move |_this, args, context| {
+                // Format arguments as strings
+                let message = args
+                    .iter()
+                    .map(|arg| {
+                        arg.to_string(context)
+                            .map(|s| s.to_std_string_escaped())
+                            .unwrap_or_else(|_| "[object]".to_string())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                // Fire-and-forget: send log to ops handler
+                let ops = ops.clone();
+                let level = level;
+                tokio::spawn(async move {
+                    let _ = ops.handle(Operation::Log { level, message }).await;
+                });
+
+                Ok(JsValue::undefined())
+            })
+        }
+    }
+
+    // Create console object
+    let console = boa_engine::object::ObjectInitializer::new(context)
+        .function(
+            make_log_fn(ops.clone(), LogLevel::Info),
+            js_string!("log"),
+            0,
+        )
+        .function(
+            make_log_fn(ops.clone(), LogLevel::Info),
+            js_string!("info"),
+            0,
+        )
+        .function(
+            make_log_fn(ops.clone(), LogLevel::Warn),
+            js_string!("warn"),
+            0,
+        )
+        .function(
+            make_log_fn(ops.clone(), LogLevel::Error),
+            js_string!("error"),
+            0,
+        )
+        .function(
+            make_log_fn(ops.clone(), LogLevel::Debug),
+            js_string!("debug"),
+            0,
+        )
+        .function(
+            make_log_fn(ops.clone(), LogLevel::Trace),
+            js_string!("trace"),
+            0,
+        )
+        .build();
+
+    // Register as globalThis.console
+    context.register_global_property(js_string!("console"), console, Attribute::all())?;
+
+    Ok(())
+}
+
+/// Setup crypto global with getRandomValues, randomUUID, and subtle.digest
+fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
+    use boa_engine::{JsValue, NativeFunction, js_string, property::Attribute};
+    use ring::{digest, rand};
+
+    // Create crypto object
+    let crypto =
+        boa_engine::object::ObjectInitializer::new(context)
+            // crypto.randomUUID()
+            .function(
+                NativeFunction::from_copy_closure(|_this, _args, _ctx| {
+                    let uuid = uuid::Uuid::new_v4().to_string();
+                    Ok(JsValue::from(boa_engine::JsString::from(uuid)))
+                }),
+                js_string!("randomUUID"),
+                0,
+            )
+            // crypto._getRandomValues(array) - modifies in place
+            .function(
+                NativeFunction::from_copy_closure(|_this, args, ctx| {
+                    if let Some(array) = args.get(0).and_then(|v| v.as_object()) {
+                        // Get the underlying ArrayBuffer
+                        if let Ok(buffer_val) = array.get(js_string!("buffer"), ctx) {
+                            if let Some(buffer_obj) = buffer_val.as_object() {
+                                if let Ok(ab) =
+                                    boa_engine::object::builtins::JsArrayBuffer::from_object(
+                                        buffer_obj.clone(),
+                                    )
+                                {
+                                    let rng = rand::SystemRandom::new();
+                                    let len = ab.data().map(|d| d.len()).unwrap_or(0);
+                                    let mut bytes = vec![0u8; len];
+
+                                    if rand::SecureRandom::fill(&rng, &mut bytes).is_ok() {
+                                        if let Some(mut data) = ab.data_mut() {
+                                            data.copy_from_slice(&bytes);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(JsValue::undefined())
+                }),
+                js_string!("_getRandomValues"),
+                1,
+            )
+            .build();
+
+    // Create crypto.subtle object
+    let subtle =
+        boa_engine::object::ObjectInitializer::new(context)
+            // crypto.subtle.__nativeDigest(algorithm, data) -> hex string
+            .function(
+                NativeFunction::from_copy_closure(|_this, args, ctx| {
+                    let algo = args
+                        .get(0)
+                        .and_then(|v| v.to_string(ctx).ok())
+                        .map(|s| s.to_std_string_escaped())
+                        .unwrap_or_default();
+
+                    let data: Vec<u8> = if let Some(arr) = args.get(1).and_then(|v| v.as_object()) {
+                        // Try to get bytes from TypedArray
+                        if let Ok(buffer_val) = arr.get(js_string!("buffer"), ctx) {
+                            if let Some(buffer_obj) = buffer_val.as_object() {
+                                if let Ok(ab) =
+                                    boa_engine::object::builtins::JsArrayBuffer::from_object(
+                                        buffer_obj.clone(),
+                                    )
+                                {
+                                    ab.data().map(|d| d.to_vec()).unwrap_or_default()
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                Vec::new()
+                            }
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
+                    let algorithm = match algo.to_uppercase().as_str() {
+                        "SHA-1" => &digest::SHA1_FOR_LEGACY_USE_ONLY,
+                        "SHA-256" => &digest::SHA256,
+                        "SHA-384" => &digest::SHA384,
+                        "SHA-512" => &digest::SHA512,
+                        _ => {
+                            return Err(boa_engine::JsNativeError::error()
+                                .with_message(format!("Unsupported algorithm: {}", algo))
+                                .into());
+                        }
+                    };
+
+                    let result = digest::digest(algorithm, &data);
+                    let hex: String = result
+                        .as_ref()
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect();
+
+                    Ok(JsValue::from(boa_engine::JsString::from(hex)))
+                }),
+                js_string!("__nativeDigest"),
+                2,
+            )
+            .build();
+
+    // Add subtle to crypto
+    crypto.set(js_string!("subtle"), subtle, false, context)?;
+
+    // Register crypto globally
+    context.register_global_property(js_string!("crypto"), crypto, Attribute::all())?;
+
+    // JS wrappers
+    context.eval(boa_engine::Source::from_bytes(
+        r#"
+        // Wrapper for getRandomValues
+        (function() {
+            const _native = crypto._getRandomValues;
+            crypto.getRandomValues = function(array) {
+                _native(array);
+                return array;
+            };
+            delete crypto._getRandomValues;
+        })();
+
+        // Wrapper for subtle.digest
+        crypto.subtle.digest = function(algorithm, data) {
+            return new Promise((resolve, reject) => {
+                try {
+                    let bytes;
+                    if (data instanceof ArrayBuffer) {
+                        bytes = new Uint8Array(data);
+                    } else if (data instanceof Uint8Array) {
+                        bytes = data;
+                    } else {
+                        reject(new Error('Data must be ArrayBuffer or Uint8Array'));
+                        return;
+                    }
+                    const algoName = typeof algorithm === 'string' ? algorithm : algorithm.name;
+                    const hexResult = crypto.subtle.__nativeDigest(algoName, bytes);
+
+                    // Convert hex to ArrayBuffer
+                    const len = hexResult.length / 2;
+                    const buffer = new ArrayBuffer(len);
+                    const view = new Uint8Array(buffer);
+                    for (let i = 0; i < len; i++) {
+                        view[i] = parseInt(hexResult.substr(i * 2, 2), 16);
+                    }
+                    resolve(buffer);
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        };
+        "#,
+    ))?;
+
+    Ok(())
+}
+
+/// Setup TextEncoder and TextDecoder APIs
+fn setup_text_encoding(context: &mut Context) -> Result<(), boa_engine::JsError> {
+    context.eval(boa_engine::Source::from_bytes(
+        r#"
+        // TextEncoder - encode strings to UTF-8 bytes
+        globalThis.TextEncoder = class TextEncoder {
+            constructor() {
+                this.encoding = 'utf-8';
+            }
+
+            encode(input) {
+                const str = String(input || '');
+                const bytes = [];
+
+                // UTF-8 encoding with proper surrogate pair handling
+                for (let i = 0; i < str.length; i++) {
+                    let code = str.codePointAt(i);
+
+                    // Skip low surrogate (already processed with high surrogate)
+                    if (code > 0xFFFF) i++;
+
+                    if (code < 0x80) {
+                        bytes.push(code);
+                    } else if (code < 0x800) {
+                        bytes.push(0xC0 | (code >> 6));
+                        bytes.push(0x80 | (code & 0x3F));
+                    } else if (code < 0x10000) {
+                        bytes.push(0xE0 | (code >> 12));
+                        bytes.push(0x80 | ((code >> 6) & 0x3F));
+                        bytes.push(0x80 | (code & 0x3F));
+                    } else {
+                        bytes.push(0xF0 | (code >> 18));
+                        bytes.push(0x80 | ((code >> 12) & 0x3F));
+                        bytes.push(0x80 | ((code >> 6) & 0x3F));
+                        bytes.push(0x80 | (code & 0x3F));
+                    }
+                }
+
+                return new Uint8Array(bytes);
+            }
+        };
+
+        // TextDecoder - decode UTF-8 bytes to strings
+        globalThis.TextDecoder = class TextDecoder {
+            constructor(encoding = 'utf-8') {
+                this.encoding = encoding.toLowerCase();
+                if (this.encoding !== 'utf-8' && this.encoding !== 'utf8') {
+                    throw new RangeError('Only UTF-8 encoding is supported');
+                }
+            }
+
+            decode(input) {
+                if (!input) return '';
+
+                // Convert to Uint8Array if needed
+                const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+                const chars = [];
+
+                // Simple UTF-8 decoding
+                let i = 0;
+                while (i < bytes.length) {
+                    const byte1 = bytes[i++];
+
+                    if (byte1 < 0x80) {
+                        // 1-byte character (ASCII)
+                        chars.push(String.fromCharCode(byte1));
+                    } else if ((byte1 & 0xE0) === 0xC0) {
+                        // 2-byte character
+                        const byte2 = bytes[i++];
+                        const code = ((byte1 & 0x1F) << 6) | (byte2 & 0x3F);
+                        chars.push(String.fromCharCode(code));
+                    } else if ((byte1 & 0xF0) === 0xE0) {
+                        // 3-byte character
+                        const byte2 = bytes[i++];
+                        const byte3 = bytes[i++];
+                        const code = ((byte1 & 0x0F) << 12) | ((byte2 & 0x3F) << 6) | (byte3 & 0x3F);
+                        chars.push(String.fromCharCode(code));
+                    } else if ((byte1 & 0xF8) === 0xF0) {
+                        // 4-byte character (emojis, etc.)
+                        const byte2 = bytes[i++];
+                        const byte3 = bytes[i++];
+                        const byte4 = bytes[i++];
+                        const code = ((byte1 & 0x07) << 18) | ((byte2 & 0x3F) << 12) |
+                                    ((byte3 & 0x3F) << 6) | (byte4 & 0x3F);
+                        chars.push(String.fromCodePoint(code));
+                    } else {
+                        // Invalid UTF-8, skip
+                        chars.push('\uFFFD'); // Replacement character
+                    }
+                }
+
+                return chars.join('');
+            }
+        };
+        "#,
+    ))?;
+
+    Ok(())
 }
 
 impl openworkers_core::Worker for Worker {

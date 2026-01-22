@@ -14,7 +14,7 @@ openworkers-core = { git = "https://github.com/openworkers/openworkers-core", ta
 # Boa JavaScript engine
 boa_engine = "0.21"
 boa_gc = "0.21"
-boa_runtime = { version = "0.21", features = ["reqwest-blocking", "url"] }
+boa_runtime = { version = "0.21", features = ["url"] }
 
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
@@ -32,14 +32,15 @@ serde_json = "1.0"
 bytes = { version = "1.11", features = ["serde"] }
 tokio-stream = "0.1"
 
-# Optional dependencies for examples/integration
-actix-web = { version = "4.12.0", features = ["macros"], optional = true }
-reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "rustls-tls"] }
+# HTTP types (for building responses in fetch)
 http = "1.4.0"
 
-[dev-dependencies]
-criterion = { version = "0.5", features = ["async_tokio"] }
+# Crypto
+ring = "0.17"
+uuid = { version = "1.17", features = ["v4"] }
 
-[[bench]]
-name = "generic_benchmark"
-harness = false
+# Optional dependencies for examples/integration
+actix-web = { version = "4.12.0", features = ["macros"], optional = true }
+
+[dev-dependencies]
+serde_json = "1.0"
