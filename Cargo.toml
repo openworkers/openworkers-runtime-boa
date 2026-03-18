@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runtime-boa"
-version = "0.10.0"
+version = "0.13.0"
 edition = "2024"
 
 [features]
@@ -9,12 +9,11 @@ actix = ["dep:actix-web", "openworkers-core/actix"]
 [dependencies]
 # Common types
 # openworkers-core = { path = "../openworkers-core" }
-openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.10.0" }
+openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.13.1", features = ["hyper"] }
 
 # Boa JavaScript engine
 boa_engine = "0.21"
 boa_gc = "0.21"
-boa_runtime = { version = "0.21", features = ["url"] }
 
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
@@ -31,9 +30,6 @@ serde_json = "1.0"
 # HTTP
 bytes = { version = "1.11", features = ["serde"] }
 tokio-stream = "0.1"
-
-# HTTP types (for building responses in fetch)
-http = "1.4.0"
 
 # Crypto
 ring = "0.17"

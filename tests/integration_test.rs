@@ -190,8 +190,8 @@ async fn test_request_headers() {
     let code = r#"
 addEventListener("fetch", (event) => {
   const request = event.request;
-  const authHeader = request.headers["authorization"] || "none";
-  const contentType = request.headers["content-type"] || "none";
+  const authHeader = request.headers.get("authorization") || "none";
+  const contentType = request.headers.get("content-type") || "none";
 
   const message = `Auth: ${authHeader}, Content-Type: ${contentType}`;
   event.respondWith(new Response(message, { status: 200 }));

@@ -1,5 +1,6 @@
 pub mod runtime;
 pub mod snapshot;
+mod web_api;
 mod worker;
 
 // Core API
