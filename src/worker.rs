@@ -277,12 +277,13 @@ impl Worker {
         // Run jobs and process pending fetches in a loop until the outer promise resolves
         let _ = self.context.run_jobs();
 
-        // Loop: drain pending fetches → resolve → run_jobs → repeat
-        // This handles `await fetch(...)` inside handlers
+        // Loop: drain pending fetches + timers → resolve → run_jobs → repeat
+        // This handles `await fetch(...)` and `setTimeout(...)` inside handlers
         for _ in 0..100 {
-            let pending_count = self.resolve_pending_fetches().await;
+            let fetch_count = self.resolve_pending_fetches().await;
+            let timer_count = self.resolve_pending_timers().await;
 
-            if pending_count == 0 {
+            if fetch_count == 0 && timer_count == 0 {
                 break;
             }
 
@@ -487,6 +488,98 @@ impl Worker {
                     let err_msg = JsValue::from(js_string!(format!("fetch failed: {}", e)));
                     let _ = reject.call(&JsValue::undefined(), &[err_msg], &mut self.context);
                 }
+            }
+        }
+
+        count
+    }
+
+    /// Drain pending timers from __pendingTimers, sleep for their delay,
+    /// then call __executeTimer(id) for each. Returns the number processed.
+    async fn resolve_pending_timers(&mut self) -> usize {
+        // Read __pendingTimers array
+        let pending_arr = match self
+            .context
+            .global_object()
+            .get(js_string!("__pendingTimers"), &mut self.context)
+        {
+            Ok(val) => val,
+            Err(_) => return 0,
+        };
+
+        let arr_obj = match pending_arr.as_object() {
+            Some(obj) => obj.clone(),
+            None => return 0,
+        };
+
+        let len = arr_obj
+            .get(js_string!("length"), &mut self.context)
+            .ok()
+            .and_then(|v| v.to_u32(&mut self.context).ok())
+            .unwrap_or(0) as usize;
+
+        if len == 0 {
+            return 0;
+        }
+
+        // Collect timer entries
+        let mut timers = Vec::with_capacity(len);
+
+        for i in 0..len {
+            let entry = match arr_obj.get(i as u32, &mut self.context) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let entry_obj = match entry.as_object() {
+                Some(obj) => obj,
+                None => continue,
+            };
+
+            let id = entry_obj
+                .get(js_string!("id"), &mut self.context)
+                .ok()
+                .and_then(|v| v.to_u32(&mut self.context).ok())
+                .unwrap_or(0);
+
+            let delay = entry_obj
+                .get(js_string!("delay"), &mut self.context)
+                .ok()
+                .and_then(|v| v.to_u32(&mut self.context).ok())
+                .unwrap_or(0) as u64;
+
+            timers.push((id, delay));
+        }
+
+        // Clear the array
+        let _ = self.context.eval(Source::from_bytes(
+            b"globalThis.__pendingTimers.length = 0;",
+        ));
+
+        let count = timers.len();
+
+        // Execute each timer: sleep for delay, then call __executeTimer(id)
+        for (id, delay) in timers {
+            if delay > 0 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+            }
+
+            // Check if timer was cancelled during the sleep
+            let cancelled_check = format!(
+                "globalThis.__cancelledTimers.has({}) ? (globalThis.__cancelledTimers.delete({}), true) : false",
+                id, id
+            );
+
+            let was_cancelled = self
+                .context
+                .eval(Source::from_bytes(cancelled_check.as_bytes()))
+                .map(|v| v.to_boolean())
+                .unwrap_or(false);
+
+            if !was_cancelled {
+                let exec_code = format!("globalThis.__executeTimer({})", id);
+                let _ = self.context.eval(Source::from_bytes(exec_code.as_bytes()));
+                let _ = self.context.run_jobs();
             }
         }
 
@@ -716,6 +809,17 @@ impl Worker {
             Ok(value) => {
                 if let Some(promise) = value.as_promise() {
                     let _ = self.context.run_jobs();
+
+                    // Drain pending timers (setTimeout inside handlers)
+                    for _ in 0..100 {
+                        let timer_count = self.resolve_pending_timers().await;
+
+                        if timer_count == 0 {
+                            break;
+                        }
+
+                        let _ = self.context.run_jobs();
+                    }
 
                     match promise.state() {
                         PromiseState::Fulfilled(_) => Ok(()),
@@ -1051,41 +1155,114 @@ fn setup_text_encoding(context: &mut Context) -> Result<(), boa_engine::JsError>
 }
 
 /// Setup timers (setTimeout, setInterval, clearTimeout, clearInterval)
+/// Setup timers (setTimeout, setInterval, clearTimeout, clearInterval)
+///
+/// Timers are stored in __pendingTimers as {id, delay, resolve} objects.
+/// The Rust side drains them with actual tokio::time::sleep delays, then
+/// calls the JS __executeTimer(id) to fire callbacks.
+/// Zero-delay timers fire immediately via Promise.resolve() (microtask).
 fn setup_timers(context: &mut Context) -> Result<(), boa_engine::JsError> {
-    // For now, provide stub implementations that execute immediately
-    // A full implementation would require integration with tokio runtime
     context.eval(Source::from_bytes(
         r#"
         globalThis.__timerId = 0;
-        globalThis.__timers = new Map();
+        globalThis.__timerCallbacks = new Map();
+        globalThis.__pendingTimers = [];
+        globalThis.__cancelledTimers = new Set();
 
-        globalThis.setTimeout = function(callback, delay, ...args) {
-            const id = ++globalThis.__timerId;
-            // For now, just schedule for next tick (simplified)
-            // In a full implementation, this would use native timers
-            Promise.resolve().then(() => {
-                if (globalThis.__timers.has(id)) {
-                    globalThis.__timers.delete(id);
-                    callback(...args);
-                }
+        globalThis.__executeTimer = function(id) {
+            var entry = globalThis.__timerCallbacks.get(id);
+
+            if (!entry) return;
+
+            if (entry.type === 'timeout') {
+                globalThis.__timerCallbacks.delete(id);
+            }
+
+            try {
+                entry.callback.apply(undefined, entry.args);
+            } catch (e) {
+                // Timer callback errors should not crash the runtime
+            }
+
+            if (entry.type === 'interval') {
+                globalThis.__pendingTimers.push({
+                    id: id,
+                    delay: entry.delay,
+                    type: 'interval'
+                });
+            }
+        };
+
+        globalThis.setTimeout = function(callback, delay) {
+            var args = [];
+
+            for (var i = 2; i < arguments.length; i++) {
+                args.push(arguments[i]);
+            }
+
+            var id = ++globalThis.__timerId;
+            var ms = Math.max(0, Number(delay) || 0);
+
+            globalThis.__timerCallbacks.set(id, {
+                callback: callback,
+                args: args,
+                type: 'timeout',
+                delay: ms
             });
-            globalThis.__timers.set(id, { callback, args, type: 'timeout' });
+
+            if (ms === 0) {
+                Promise.resolve().then(function() {
+                    if (!globalThis.__cancelledTimers.has(id)) {
+                        globalThis.__executeTimer(id);
+                    } else {
+                        globalThis.__cancelledTimers.delete(id);
+                    }
+                });
+            } else {
+                globalThis.__pendingTimers.push({
+                    id: id,
+                    delay: ms,
+                    type: 'timeout'
+                });
+            }
+
             return id;
         };
 
-        globalThis.setInterval = function(callback, interval, ...args) {
-            const id = ++globalThis.__timerId;
-            // Simplified - just runs once for now
-            globalThis.__timers.set(id, { callback, args, type: 'interval' });
+        globalThis.setInterval = function(callback, interval) {
+            var args = [];
+
+            for (var i = 2; i < arguments.length; i++) {
+                args.push(arguments[i]);
+            }
+
+            var id = ++globalThis.__timerId;
+            var ms = Math.max(0, Number(interval) || 0);
+
+            globalThis.__timerCallbacks.set(id, {
+                callback: callback,
+                args: args,
+                type: 'interval',
+                delay: ms
+            });
+
+            globalThis.__pendingTimers.push({
+                id: id,
+                delay: ms,
+                type: 'interval'
+            });
+
             return id;
         };
 
         globalThis.clearTimeout = function(id) {
-            globalThis.__timers.delete(id);
+            globalThis.__timerCallbacks.delete(id);
+            globalThis.__cancelledTimers.add(id);
         };
 
         globalThis.clearInterval = function(id) {
-            globalThis.__timers.delete(id);
+            globalThis.__timerCallbacks.delete(id);
+            globalThis.__cancelledTimers.add(id);
         };
         "#,
     ))?;
@@ -1138,145 +1315,351 @@ fn setup_fetch_global(context: &mut Context) -> Result<(), boa_engine::JsError> 
     Ok(())
 }
 
-/// Setup ReadableStream
+/// Setup ReadableStream (WHATWG Streams spec, adapted from V8 runtime polyfill)
+///
+/// Three classes: ReadableStream, ReadableStreamDefaultController, ReadableStreamDefaultReader
+/// Uses var/function() syntax to work around Boa 0.21 const/let + shorthand method bug.
 fn setup_readable_stream(context: &mut Context) -> Result<(), boa_engine::JsError> {
+    // ReadableStreamDefaultController — manages the queue and enqueue/close/error
+    context.eval(Source::from_bytes(
+        r#"
+        globalThis.ReadableStreamDefaultController = class ReadableStreamDefaultController {
+            constructor(stream) {
+                this._stream = stream;
+                this._queue = [];
+                this._closeRequested = false;
+            }
+
+            enqueue(chunk) {
+                if (this._closeRequested) {
+                    throw new TypeError('Cannot enqueue after close');
+                }
+
+                if (this._stream._state !== 'readable') {
+                    throw new TypeError('Stream is not in readable state');
+                }
+
+                this._queue.push({ type: 'chunk', value: chunk });
+                this._processQueue();
+            }
+
+            close() {
+                if (this._closeRequested) {
+                    throw new TypeError('Stream is already closing');
+                }
+
+                if (this._stream._state !== 'readable') {
+                    throw new TypeError('Stream is not in readable state');
+                }
+
+                this._closeRequested = true;
+                this._queue.push({ type: 'close' });
+                this._processQueue();
+            }
+
+            error(error) {
+                if (this._stream._state !== 'readable') {
+                    return;
+                }
+
+                this._stream._state = 'errored';
+                this._stream._storedError = error;
+
+                if (this._stream._reader) {
+                    this._stream._reader._errorPending(error);
+                }
+
+                this._queue = [];
+            }
+
+            _processQueue() {
+                if (this._stream._reader) {
+                    this._stream._reader._processQueue();
+                }
+            }
+
+            get desiredSize() {
+                if (this._stream._state === 'errored') return null;
+                if (this._stream._state === 'closed') return 0;
+                return Math.max(0, 1 - this._queue.length);
+            }
+        };
+        "#,
+    ))?;
+
+    // ReadableStreamDefaultReader — read(), releaseLock(), cancel(), closed promise
+    context.eval(Source::from_bytes(
+        r#"
+        globalThis.ReadableStreamDefaultReader = class ReadableStreamDefaultReader {
+            constructor(stream) {
+                if (stream._reader) {
+                    throw new TypeError('Stream is already locked');
+                }
+
+                this._stream = stream;
+                this._readRequests = [];
+                this._closedPromiseResolve = null;
+                this._closedPromiseReject = null;
+
+                var self = this;
+                this._closedPromise = new Promise(function(resolve, reject) {
+                    self._closedPromiseResolve = resolve;
+                    self._closedPromiseReject = reject;
+                });
+            }
+
+            read() {
+                if (!this._stream) {
+                    return Promise.reject(new TypeError('Reader is released'));
+                }
+
+                if (this._stream._state === 'errored') {
+                    return Promise.reject(this._stream._storedError);
+                }
+
+                var controller = this._stream._controller;
+
+                if (controller._queue.length > 0) {
+                    var item = controller._queue.shift();
+
+                    if (item.type === 'close') {
+                        this._stream._state = 'closed';
+                        this._closePending();
+                        return Promise.resolve({ done: true, value: undefined });
+                    }
+
+                    return Promise.resolve({ done: false, value: item.value });
+                }
+
+                if (this._stream._state === 'closed') {
+                    return Promise.resolve({ done: true, value: undefined });
+                }
+
+                var underlyingSource = this._stream._underlyingSource;
+
+                if (underlyingSource && underlyingSource.pull) {
+                    var self = this;
+
+                    return new Promise(function(resolve, reject) {
+                        self._readRequests.push({ resolve: resolve, reject: reject });
+
+                        var pullPromise = underlyingSource.pull(controller);
+
+                        if (pullPromise && typeof pullPromise.then === 'function') {
+                            pullPromise.catch(function(e) {
+                                controller.error(e);
+                            });
+                        }
+                    });
+                }
+
+                var self = this;
+
+                return new Promise(function(resolve, reject) {
+                    self._readRequests.push({ resolve: resolve, reject: reject });
+                });
+            }
+
+            _processQueue() {
+                var controller = this._stream._controller;
+
+                while (this._readRequests.length > 0 && controller._queue.length > 0) {
+                    var request = this._readRequests.shift();
+                    var item = controller._queue.shift();
+
+                    if (item.type === 'close') {
+                        this._stream._state = 'closed';
+                        request.resolve({ done: true, value: undefined });
+                        this._closePending();
+                        break;
+                    } else {
+                        request.resolve({ done: false, value: item.value });
+                    }
+                }
+
+                if (this._stream._state === 'closed' && this._readRequests.length > 0) {
+                    while (this._readRequests.length > 0) {
+                        var req = this._readRequests.shift();
+                        req.resolve({ done: true, value: undefined });
+                    }
+                }
+            }
+
+            _closePending() {
+                if (this._closedPromiseResolve) {
+                    this._closedPromiseResolve();
+                    this._closedPromiseResolve = null;
+                }
+            }
+
+            _errorPending(error) {
+                while (this._readRequests.length > 0) {
+                    var req = this._readRequests.shift();
+                    req.reject(error);
+                }
+
+                if (this._closedPromiseReject) {
+                    this._closedPromiseReject(error);
+                    this._closedPromiseReject = null;
+                }
+            }
+
+            releaseLock() {
+                if (!this._stream) return;
+
+                if (this._readRequests.length > 0) {
+                    throw new TypeError('Cannot release lock while read requests are pending');
+                }
+
+                this._stream._reader = null;
+                this._stream = null;
+            }
+
+            cancel(reason) {
+                if (!this._stream) {
+                    return Promise.reject(new TypeError('Reader is released'));
+                }
+
+                var cancelPromise = this._stream.cancel(reason);
+                this.releaseLock();
+                return cancelPromise;
+            }
+
+            get closed() {
+                return this._closedPromise;
+            }
+        };
+        "#,
+    ))?;
+
+    // ReadableStream itself
     context.eval(Source::from_bytes(
         r#"
         globalThis.ReadableStream = class ReadableStream {
-            constructor(underlyingSource = {}, strategy = {}) {
+            constructor(underlyingSource) {
+                underlyingSource = underlyingSource || {};
+                this._underlyingSource = underlyingSource;
                 this._controller = null;
-                this._locked = false;
-                this._state = 'readable';
                 this._reader = null;
-                this._storedError = undefined;
-                this._queue = [];
+                this._state = 'readable';
+                this._storedError = null;
 
-                const controller = {
-                    _stream: this,
-                    enqueue: (chunk) => {
-                        if (this._state !== 'readable') return;
-                        this._queue.push({ type: 'chunk', value: chunk });
-                        if (this._reader && this._reader._resolveRead) {
-                            const resolve = this._reader._resolveRead;
-                            this._reader._resolveRead = null;
-                            const item = this._queue.shift();
-                            resolve({ value: item.value, done: false });
-                        }
-                    },
-                    close: () => {
-                        if (this._state !== 'readable') return;
-                        this._state = 'closed';
-                        this._queue.push({ type: 'close' });
-                        if (this._reader && this._reader._resolveRead) {
-                            const resolve = this._reader._resolveRead;
-                            this._reader._resolveRead = null;
-                            resolve({ value: undefined, done: true });
-                        }
-                    },
-                    error: (e) => {
-                        if (this._state !== 'readable') return;
-                        this._state = 'errored';
-                        this._storedError = e;
-                        if (this._reader && this._reader._rejectRead) {
-                            this._reader._rejectRead(e);
-                        }
-                    }
-                };
+                var controller = new ReadableStreamDefaultController(this);
                 this._controller = controller;
 
                 if (underlyingSource.start) {
-                    underlyingSource.start(controller);
-                }
-            }
+                    var startResult = underlyingSource.start(controller);
 
-            get locked() {
-                return this._locked;
+                    if (startResult && typeof startResult.then === 'function') {
+                        startResult.catch(function(e) {
+                            controller.error(e);
+                        });
+                    }
+                }
             }
 
             getReader() {
-                if (this._locked) {
-                    throw new TypeError('ReadableStream is locked');
+                if (this._reader) {
+                    throw new TypeError('ReadableStream is locked to a reader');
                 }
-                this._locked = true;
 
-                const stream = this;
-                const reader = {
-                    _stream: stream,
-                    _resolveRead: null,
-                    _rejectRead: null,
-
-                    read() {
-                        return new Promise((resolve, reject) => {
-                            if (stream._queue.length > 0) {
-                                const item = stream._queue.shift();
-                                if (item.type === 'close') {
-                                    resolve({ value: undefined, done: true });
-                                } else {
-                                    resolve({ value: item.value, done: false });
-                                }
-                            } else if (stream._state === 'closed') {
-                                resolve({ value: undefined, done: true });
-                            } else if (stream._state === 'errored') {
-                                reject(stream._storedError);
-                            } else {
-                                this._resolveRead = resolve;
-                                this._rejectRead = reject;
-                            }
-                        });
-                    },
-
-                    releaseLock() {
-                        stream._locked = false;
-                        stream._reader = null;
-                    },
-
-                    cancel(reason) {
-                        stream._state = 'closed';
-                        return Promise.resolve();
-                    }
-                };
-
+                var reader = new ReadableStreamDefaultReader(this);
                 this._reader = reader;
                 return reader;
             }
 
-            tee() {
-                const chunks = [];
-                const reader = this.getReader();
+            cancel(reason) {
+                if (this._state === 'closed') return Promise.resolve();
 
-                const branch1 = new ReadableStream({
-                    async start(controller) {
-                        try {
-                            while (true) {
-                                const { done, value } = await reader.read();
-                                if (done) {
-                                    controller.close();
-                                    break;
-                                }
-                                chunks.push(value);
-                                controller.enqueue(value);
-                            }
-                        } catch (e) {
-                            controller.error(e);
+                if (this._state === 'errored') return Promise.reject(this._storedError);
+
+                this._state = 'closed';
+
+                if (this._reader) {
+                    this._reader._closePending();
+                    this._reader = null;
+                }
+
+                if (this._underlyingSource.cancel) {
+                    return Promise.resolve(this._underlyingSource.cancel(reason));
+                }
+
+                return Promise.resolve();
+            }
+
+            get locked() {
+                return this._reader !== null;
+            }
+
+            tee() {
+                if (this.locked) {
+                    throw new TypeError('Cannot tee a locked stream');
+                }
+
+                var reader = this.getReader();
+                var canceled1 = false;
+                var canceled2 = false;
+                var closedOrErrored = false;
+                var readPromise = null;
+
+                function cloneValue(value) {
+                    if (value instanceof Uint8Array) {
+                        return new Uint8Array(value);
+                    }
+
+                    return value;
+                }
+
+                function pullBoth(controller1, controller2) {
+                    if (closedOrErrored) return Promise.resolve();
+                    if (readPromise) return readPromise;
+
+                    readPromise = reader.read().then(function(result) {
+                        readPromise = null;
+
+                        if (result.done) {
+                            closedOrErrored = true;
+                            try { controller1.close(); } catch (e) {}
+                            try { controller2.close(); } catch (e) {}
+                            reader.releaseLock();
+                            return;
                         }
+
+                        if (!canceled1) controller1.enqueue(result.value);
+                        if (!canceled2) controller2.enqueue(cloneValue(result.value));
+                    }).catch(function(e) {
+                        readPromise = null;
+                        try { controller1.error(e); } catch (err) {}
+                        try { controller2.error(e); } catch (err) {}
+                    });
+
+                    return readPromise;
+                }
+
+                var ctrl1 = null;
+                var ctrl2 = null;
+
+                var branch1 = new ReadableStream({
+                    start: function(controller) { ctrl1 = controller; },
+                    pull: function(controller) { return pullBoth(controller, ctrl2); },
+                    cancel: function(reason) {
+                        canceled1 = true;
+                        if (canceled2) return reader.cancel(reason);
+                        return Promise.resolve();
                     }
                 });
 
-                const branch2 = new ReadableStream({
-                    start(controller) {
-                        for (const chunk of chunks) {
-                            controller.enqueue(chunk);
-                        }
-                        controller.close();
+                var branch2 = new ReadableStream({
+                    start: function(controller) { ctrl2 = controller; },
+                    pull: function(controller) { return pullBoth(ctrl1, controller); },
+                    cancel: function(reason) {
+                        canceled2 = true;
+                        if (canceled1) return reader.cancel(reason);
+                        return Promise.resolve();
                     }
                 });
 
                 return [branch1, branch2];
-            }
-
-            cancel(reason) {
-                this._state = 'closed';
-                return Promise.resolve();
             }
         };
         "#,
@@ -1371,10 +1754,16 @@ fn setup_response_extractors(context: &mut Context) -> Result<(), boa_engine::Js
     context.eval(Source::from_bytes(
         r#"
         globalThis.__extractBody = function(stream) {
-            if (!stream || !stream._queue) return '';
+            var queue = null;
+            if (stream && stream._controller && stream._controller._queue) {
+                queue = stream._controller._queue;
+            } else if (stream && stream._queue) {
+                queue = stream._queue;
+            }
+            if (!queue) return '';
             var chunks = [];
-            for (var i = 0; i < stream._queue.length; i++) {
-                var item = stream._queue[i];
+            for (var i = 0; i < queue.length; i++) {
+                var item = queue[i];
                 if (item.type === 'chunk' && item.value) {
                     if (item.value instanceof Uint8Array) {
                         chunks.push(new TextDecoder().decode(item.value));

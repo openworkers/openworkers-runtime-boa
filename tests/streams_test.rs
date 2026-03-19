@@ -114,8 +114,8 @@ async fn test_response_body_is_readable_stream() {
 async fn test_readable_stream_read_chunks() {
     let code = r#"
         addEventListener('fetch', async (event) => {
-            const stream = new ReadableStream({
-                start(controller) {
+            var stream = new ReadableStream({
+                start: function(controller) {
                     controller.enqueue('chunk1');
                     controller.enqueue('chunk2');
                     controller.enqueue('chunk3');
@@ -123,12 +123,12 @@ async fn test_readable_stream_read_chunks() {
                 }
             });
 
-            const reader = stream.getReader();
-            let chunks = 0;
+            var reader = stream.getReader();
+            var chunks = 0;
 
             while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+                var r = await reader.read();
+                if (r.done) break;
                 chunks++;
             }
 
@@ -152,4 +152,170 @@ async fn test_readable_stream_read_chunks() {
     let response = rx.await.unwrap();
     let body_bytes = response.body.collect().await.unwrap();
     assert_eq!(String::from_utf8_lossy(&body_bytes), "chunks: 3");
+}
+
+#[tokio::test]
+async fn test_readable_stream_cancel() {
+    let code = r#"
+        addEventListener('fetch', async (event) => {
+            var cancelled = false;
+
+            var stream = new ReadableStream({
+                start: function(controller) {
+                    controller.enqueue('data');
+                },
+                cancel: function(reason) {
+                    cancelled = true;
+                }
+            });
+
+            var reader = stream.getReader();
+            await reader.cancel('done');
+            event.respondWith(new Response('cancelled: ' + cancelled));
+        });
+    "#;
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let req = HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    };
+
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
+
+    let response = rx.await.unwrap();
+    let body_bytes = response.body.collect().await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&body_bytes), "cancelled: true");
+}
+
+#[tokio::test]
+async fn test_readable_stream_error() {
+    let code = r#"
+        addEventListener('fetch', async (event) => {
+            var stream = new ReadableStream({
+                start: function(controller) {
+                    controller.error(new Error('test error'));
+                }
+            });
+
+            var reader = stream.getReader();
+            var caught = false;
+
+            try {
+                await reader.read();
+            } catch (e) {
+                caught = true;
+            }
+
+            event.respondWith(new Response('caught: ' + caught));
+        });
+    "#;
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let req = HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    };
+
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
+
+    let response = rx.await.unwrap();
+    let body_bytes = response.body.collect().await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&body_bytes), "caught: true");
+}
+
+#[tokio::test]
+async fn test_readable_stream_as_response_body() {
+    // Response constructed with a ReadableStream body
+    let code = r#"
+        addEventListener('fetch', async (event) => {
+            var stream = new ReadableStream({
+                start: function(controller) {
+                    var enc = new TextEncoder();
+                    controller.enqueue(enc.encode('Hello '));
+                    controller.enqueue(enc.encode('Stream'));
+                    controller.close();
+                }
+            });
+
+            var resp = new Response(stream);
+
+            // Read the response body back
+            var reader = resp.body.getReader();
+            var result = '';
+
+            while (true) {
+                var r = await reader.read();
+                if (r.done) break;
+                result += new TextDecoder().decode(r.value);
+            }
+
+            event.respondWith(new Response(result));
+        });
+    "#;
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let req = HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    };
+
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
+
+    let response = rx.await.unwrap();
+    let body_bytes = response.body.collect().await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&body_bytes), "Hello Stream");
+}
+
+#[tokio::test]
+async fn test_readable_stream_controller_desired_size() {
+    let code = r#"
+        addEventListener('fetch', (event) => {
+            var sizes = [];
+            var stream = new ReadableStream({
+                start: function(controller) {
+                    sizes.push(controller.desiredSize);
+                    controller.enqueue('a');
+                    sizes.push(controller.desiredSize);
+                    controller.enqueue('b');
+                    sizes.push(controller.desiredSize);
+                    controller.close();
+                }
+            });
+            event.respondWith(new Response(sizes.join(',')));
+        });
+    "#;
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let req = HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    };
+
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
+
+    let response = rx.await.unwrap();
+    let body_bytes = response.body.collect().await.unwrap();
+    // desiredSize: 1 (empty), 0 (1 item), 0 (2 items, clamped)
+    assert_eq!(String::from_utf8_lossy(&body_bytes), "1,0,0");
 }
