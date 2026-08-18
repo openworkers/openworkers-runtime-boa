@@ -53,7 +53,11 @@ impl Worker {
     ) -> Result<Self, TerminationReason> {
         let mut context = Context::default();
 
-        setup_console(&mut context).map_err(|e| {
+        boa_runtime::console::Console::register_with_logger(
+            boa_runtime::console::DefaultLogger,
+            &mut context,
+        )
+        .map_err(|e| {
             TerminationReason::InitializationError(format!("Failed to register console: {}", e))
         })?;
 
@@ -61,7 +65,7 @@ impl Worker {
             TerminationReason::InitializationError(format!("Failed to register crypto: {}", e))
         })?;
 
-        setup_text_encoding(&mut context).map_err(|e| {
+        boa_runtime::text::register(None, &mut context).map_err(|e| {
             TerminationReason::InitializationError(format!(
                 "Failed to register text encoding: {}",
                 e
@@ -806,80 +810,12 @@ impl Worker {
 // Setup functions
 // ============================================================================
 
-/// Setup console
-///
-/// Writes to stderr; console output is not yet routed to the OperationsHandler,
-/// so the runner cannot collect worker logs.
-fn setup_console(context: &mut Context) -> Result<(), boa_engine::JsError> {
-    let console = boa_engine::object::ObjectInitializer::new(context)
-        .function(
-            NativeFunction::from_copy_closure(|_this, args, ctx| {
-                let msg = args_to_string(args, ctx);
-                eprintln!("{}", msg);
-                Ok(JsValue::undefined())
-            }),
-            js_string!("log"),
-            0,
-        )
-        .function(
-            NativeFunction::from_copy_closure(|_this, args, ctx| {
-                let msg = args_to_string(args, ctx);
-                eprintln!("[WARN] {}", msg);
-                Ok(JsValue::undefined())
-            }),
-            js_string!("warn"),
-            0,
-        )
-        .function(
-            NativeFunction::from_copy_closure(|_this, args, ctx| {
-                let msg = args_to_string(args, ctx);
-                eprintln!("[ERROR] {}", msg);
-                Ok(JsValue::undefined())
-            }),
-            js_string!("error"),
-            0,
-        )
-        .function(
-            NativeFunction::from_copy_closure(|_this, args, ctx| {
-                let msg = args_to_string(args, ctx);
-                eprintln!("[INFO] {}", msg);
-                Ok(JsValue::undefined())
-            }),
-            js_string!("info"),
-            0,
-        )
-        .function(
-            NativeFunction::from_copy_closure(|_this, args, ctx| {
-                let msg = args_to_string(args, ctx);
-                eprintln!("[DEBUG] {}", msg);
-                Ok(JsValue::undefined())
-            }),
-            js_string!("debug"),
-            0,
-        )
-        .build();
-
-    context.register_global_property(js_string!("console"), console, Attribute::all())?;
-    Ok(())
-}
-
 /// Render a value as a JS literal to be spliced into generated source.
 ///
 /// JSON syntax is a subset of JS expression syntax, so this escapes quotes,
 /// backslashes and newlines that would otherwise break out of the literal.
 fn js_literal<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).expect("request and response fields are serializable")
-}
-
-fn args_to_string(args: &[JsValue], ctx: &mut Context) -> String {
-    args.iter()
-        .map(|arg| {
-            arg.to_string(ctx)
-                .map(|s| s.to_std_string_escaped())
-                .unwrap_or_else(|_| "[object]".to_string())
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// Setup crypto global
@@ -1024,93 +960,6 @@ fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
         "#,
     ))?;
 
-    Ok(())
-}
-
-/// Setup TextEncoder/TextDecoder
-fn setup_text_encoding(context: &mut Context) -> Result<(), boa_engine::JsError> {
-    context.eval(Source::from_bytes(
-        r#"
-        globalThis.TextEncoder = class TextEncoder {
-            constructor() {
-                this.encoding = 'utf-8';
-            }
-
-            encode(input) {
-                const str = String(input || '');
-                const bytes = [];
-
-                for (let i = 0; i < str.length; i++) {
-                    let code = str.codePointAt(i);
-                    if (code > 0xFFFF) i++;
-
-                    if (code < 0x80) {
-                        bytes.push(code);
-                    } else if (code < 0x800) {
-                        bytes.push(0xC0 | (code >> 6));
-                        bytes.push(0x80 | (code & 0x3F));
-                    } else if (code < 0x10000) {
-                        bytes.push(0xE0 | (code >> 12));
-                        bytes.push(0x80 | ((code >> 6) & 0x3F));
-                        bytes.push(0x80 | (code & 0x3F));
-                    } else {
-                        bytes.push(0xF0 | (code >> 18));
-                        bytes.push(0x80 | ((code >> 12) & 0x3F));
-                        bytes.push(0x80 | ((code >> 6) & 0x3F));
-                        bytes.push(0x80 | (code & 0x3F));
-                    }
-                }
-
-                return new Uint8Array(bytes);
-            }
-        };
-
-        globalThis.TextDecoder = class TextDecoder {
-            constructor(encoding = 'utf-8') {
-                this.encoding = encoding.toLowerCase();
-                if (this.encoding !== 'utf-8' && this.encoding !== 'utf8') {
-                    throw new RangeError('Only UTF-8 encoding is supported');
-                }
-            }
-
-            decode(input) {
-                if (!input) return '';
-
-                const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-                const chars = [];
-
-                let i = 0;
-                while (i < bytes.length) {
-                    const byte1 = bytes[i++];
-
-                    if (byte1 < 0x80) {
-                        chars.push(String.fromCharCode(byte1));
-                    } else if ((byte1 & 0xE0) === 0xC0) {
-                        const byte2 = bytes[i++];
-                        const code = ((byte1 & 0x1F) << 6) | (byte2 & 0x3F);
-                        chars.push(String.fromCharCode(code));
-                    } else if ((byte1 & 0xF0) === 0xE0) {
-                        const byte2 = bytes[i++];
-                        const byte3 = bytes[i++];
-                        const code = ((byte1 & 0x0F) << 12) | ((byte2 & 0x3F) << 6) | (byte3 & 0x3F);
-                        chars.push(String.fromCharCode(code));
-                    } else if ((byte1 & 0xF8) === 0xF0) {
-                        const byte2 = bytes[i++];
-                        const byte3 = bytes[i++];
-                        const byte4 = bytes[i++];
-                        const code = ((byte1 & 0x07) << 18) | ((byte2 & 0x3F) << 12) |
-                                    ((byte3 & 0x3F) << 6) | (byte4 & 0x3F);
-                        chars.push(String.fromCodePoint(code));
-                    } else {
-                        chars.push('\uFFFD');
-                    }
-                }
-
-                return chars.join('');
-            }
-        };
-        "#,
-    ))?;
     Ok(())
 }
 

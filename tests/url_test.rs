@@ -1,43 +1,6 @@
-use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
-use openworkers_runtime_boa::Worker;
-use std::collections::HashMap;
+mod common;
 
-/// Run `expr` inside a fetch handler and return what it evaluated to.
-async fn eval(expr: &str) -> String {
-    let script = format!(
-        r#"addEventListener('fetch', (event) => {{
-            let out;
-
-            try {{
-                out = String((function() {{ {} }})());
-            }} catch (e) {{
-                out = 'threw ' + (e.name || e);
-            }}
-
-            event.respondWith(new Response(out));
-        }});"#,
-        expr
-    );
-
-    let mut worker = Worker::new(Script::new(script.as_str()), None)
-        .await
-        .expect("worker should initialize");
-
-    let request = HttpRequest {
-        method: HttpMethod::Get,
-        url: "https://example.com/".to_string(),
-        headers: HashMap::new(),
-        body: RequestBody::None,
-    };
-
-    let (task, rx) = Event::fetch(request);
-    worker.exec(task).await.expect("task should execute");
-
-    let response = rx.await.expect("should receive response");
-    let body = response.body.collect().await.expect("should have body");
-
-    String::from_utf8_lossy(&body).into_owned()
-}
+use common::eval;
 
 #[tokio::test]
 async fn test_url_parts() {
@@ -73,7 +36,7 @@ async fn test_url_relative_to_base() {
 #[tokio::test]
 async fn test_url_rejects_relative_without_base() {
     let out = eval("return new URL('/a').href;").await;
-    assert_eq!(out, "threw TypeError");
+    assert!(out.starts_with("threw TypeError"), "{}", out);
 }
 
 #[tokio::test]
