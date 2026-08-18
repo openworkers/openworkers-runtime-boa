@@ -37,7 +37,6 @@ impl EventListeners {
 pub struct Worker {
     context: Context,
     aborted: Arc<AtomicBool>,
-    #[allow(dead_code)]
     ops: OperationsHandle,
 }
 
@@ -50,7 +49,7 @@ impl Worker {
     ) -> Result<Self, TerminationReason> {
         let mut context = Context::default();
 
-        setup_console_with_ops(&mut context, ops.clone()).map_err(|e| {
+        setup_console(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!("Failed to register console: {}", e))
         })?;
 
@@ -251,8 +250,8 @@ impl Worker {
         // Run jobs and process pending fetches in a loop until the outer promise resolves
         let _ = self.context.run_jobs();
 
-        // Loop: drain pending fetches + timers → resolve → run_jobs → repeat
-        // This handles `await fetch(...)` and `setTimeout(...)` inside handlers
+        // Drain fetches and timers until neither yields work, so that
+        // `await fetch(...)` and `setTimeout(...)` inside handlers resolve
         for _ in 0..100 {
             let fetch_count = self.resolve_pending_fetches().await;
             let timer_count = self.resolve_pending_timers().await;
@@ -264,7 +263,6 @@ impl Worker {
             let _ = self.context.run_jobs();
         }
 
-        // The result is a Promise — extract the resolved value
         if let Some(promise) = result.as_promise() {
             match promise.state() {
                 PromiseState::Fulfilled(val) => self.extract_response_from_js(&val),
@@ -581,8 +579,7 @@ impl Worker {
         )
     }
 
-    /// Extract HttpResponse from a JS Response object (our web_api.rs Response class)
-    /// Reads status, headers._map, and body._queue via Rust API — no eval needed.
+    /// Extract HttpResponse from a JS Response object built by web_api.rs
     fn extract_response_from_js(
         &mut self,
         value: &JsValue,
@@ -812,12 +809,11 @@ impl Worker {
 // Setup functions
 // ============================================================================
 
-/// Setup console (basic implementation using eprintln)
-/// Note: OperationsHandler logging integration would require unsafe code in Boa
-fn setup_console_with_ops(
-    context: &mut Context,
-    _ops: OperationsHandle,
-) -> Result<(), boa_engine::JsError> {
+/// Setup console
+///
+/// Writes to stderr; console output is not yet routed to the OperationsHandler,
+/// so the runner cannot collect worker logs.
+fn setup_console(context: &mut Context) -> Result<(), boa_engine::JsError> {
     let console = boa_engine::object::ObjectInitializer::new(context)
         .function(
             NativeFunction::from_copy_closure(|_this, args, ctx| {
@@ -1128,7 +1124,6 @@ fn setup_text_encoding(context: &mut Context) -> Result<(), boa_engine::JsError>
 }
 
 /// Setup timers (setTimeout, setInterval, clearTimeout, clearInterval)
-/// Setup timers (setTimeout, setInterval, clearTimeout, clearInterval)
 ///
 /// Timers are stored in __pendingTimers as {id, delay, resolve} objects.
 /// The Rust side drains them with actual tokio::time::sleep delays, then
@@ -1293,7 +1288,7 @@ fn setup_fetch_global(context: &mut Context) -> Result<(), boa_engine::JsError> 
 /// Three classes: ReadableStream, ReadableStreamDefaultController, ReadableStreamDefaultReader
 /// Uses var/function() syntax to work around Boa 0.21 const/let + shorthand method bug.
 fn setup_readable_stream(context: &mut Context) -> Result<(), boa_engine::JsError> {
-    // ReadableStreamDefaultController — manages the queue and enqueue/close/error
+    // ReadableStreamDefaultController owns the queue and enqueue/close/error
     context.eval(Source::from_bytes(
         r#"
         globalThis.ReadableStreamDefaultController = class ReadableStreamDefaultController {
@@ -1360,7 +1355,7 @@ fn setup_readable_stream(context: &mut Context) -> Result<(), boa_engine::JsErro
         "#,
     ))?;
 
-    // ReadableStreamDefaultReader — read(), releaseLock(), cancel(), closed promise
+    // ReadableStreamDefaultReader provides read(), releaseLock(), cancel(), closed
     context.eval(Source::from_bytes(
         r#"
         globalThis.ReadableStreamDefaultReader = class ReadableStreamDefaultReader {
@@ -1704,10 +1699,11 @@ fn setup_event_handling(context: &mut Context) -> Result<(), boa_engine::JsError
 }
 
 /// Setup response extraction helpers (registered once at init, called per-request)
-/// These are minimal JS functions that handle Map iteration and ReadableStream queue
-/// reading — operations that are awkward to do via Boa's Rust API alone.
+///
+/// Map iteration and ReadableStream queue reading are awkward through Boa's Rust
+/// API alone, so they are done in JS.
 fn setup_response_extractors(context: &mut Context) -> Result<(), boa_engine::JsError> {
-    // Extract headers from a Headers instance → flat array [key, val, key, val, ...]
+    // Extract headers from a Headers instance into a flat [key, val, key, val] array
     context.eval(Source::from_bytes(
         r#"
         globalThis.__extractHeaders = function(headers) {
