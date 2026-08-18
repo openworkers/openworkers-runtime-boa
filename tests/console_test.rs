@@ -16,7 +16,8 @@ impl OperationsHandler for CollectingOps {
     }
 }
 
-async fn run(script: &str) -> Vec<(LogLevel, String)> {
+/// Returns the logs the script produced and the body and status it responded with.
+async fn run(script: &str) -> (Vec<(LogLevel, String)>, u16, String) {
     let ops = Arc::new(CollectingOps::default());
     let mut worker = Worker::new_with_ops(Script::new(script), None, ops.clone())
         .await
@@ -31,15 +32,21 @@ async fn run(script: &str) -> Vec<(LogLevel, String)> {
 
     let (task, rx) = Event::fetch(request);
     worker.exec(task).await.expect("task should execute");
-    let _ = rx.await;
 
-    let logs = ops.logs.lock().unwrap();
-    logs.clone()
+    let response = rx.await.expect("should receive response");
+    let body = response.body.collect().await.unwrap_or_default();
+    let logs = ops.logs.lock().unwrap().clone();
+
+    (
+        logs,
+        response.status,
+        String::from_utf8_lossy(&body).into_owned(),
+    )
 }
 
 #[tokio::test]
 async fn test_console_reaches_the_operations_handler() {
-    let logs = run(r#"
+    let (logs, _, _) = run(r#"
         addEventListener('fetch', (event) => {
             console.log('plain', 1);
             console.warn('careful');
@@ -57,4 +64,30 @@ async fn test_console_reaches_the_operations_handler() {
             (LogLevel::Error, "boom".to_string()),
         ]
     );
+}
+
+#[tokio::test]
+async fn test_thrown_handler_error_is_logged_not_served() {
+    let (logs, status, body) = run(r#"
+        addEventListener('fetch', () => { throw new Error('db://user:hunter2@host'); });
+    "#)
+    .await;
+
+    assert_eq!(status, 500);
+    assert_eq!(body, "Internal Server Error");
+    assert!(logs[0].1.contains("hunter2"), "{:?}", logs);
+}
+
+#[tokio::test]
+async fn test_rejected_respond_with_is_logged_not_served() {
+    let (logs, status, body) = run(r#"
+        addEventListener('fetch', (event) => {
+            event.respondWith(Promise.reject(new Error('db://user:hunter2@host')));
+        });
+    "#)
+    .await;
+
+    assert_eq!(status, 500);
+    assert_eq!(body, "Internal Server Error");
+    assert!(logs[0].1.contains("hunter2"), "{:?}", logs);
 }

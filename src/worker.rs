@@ -1465,19 +1465,26 @@ fn setup_event_handling(context: &mut Context) -> Result<(), boa_engine::JsError
                 respondWith: function(r) { this._response = r; }
             };
 
+            // A handler failure must not reach the client, only the log handler
+            function failed(e) {
+                var detail = String(e) + (e && e.stack ? '\n' + e.stack : '');
+                console.error('Uncaught exception in fetch handler:', detail);
+                return new Response('Internal Server Error', { status: 500 });
+            }
+
             for (var i = 0; i < handlers.length; i++) {
                 try {
                     await handlers[i](event);
                 } catch (e) {
-                    if (!event._response) {
-                        event._response = new Response(
-                            'Error: ' + (e.message || e), { status: 500 }
-                        );
-                    }
+                    if (!event._response) event._response = failed(e);
                 }
             }
 
-            return await event._response;
+            try {
+                return await event._response;
+            } catch (e) {
+                return failed(e);
+            }
         };
         "#,
     ))?;
