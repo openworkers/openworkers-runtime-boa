@@ -285,3 +285,37 @@ async fn test_fetch_waits_for_a_slow_handler() {
     let body = response.body.collect().await.expect("Should have body");
     assert_eq!(String::from_utf8_lossy(&body), "slow,slow");
 }
+
+#[tokio::test]
+async fn test_fetched_response_can_be_the_answer() {
+    let script = r#"
+        addEventListener('fetch', (event) => {
+            event.respondWith(fetch('https://example.com/get'));
+        });
+    "#;
+
+    let mut worker = create_worker(script).await;
+
+    let request = HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    };
+
+    let (task, rx) = Event::fetch(request);
+    worker.exec(task).await.expect("Task should execute");
+
+    let response = rx.await.expect("Should receive response");
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        response.headers,
+        vec![("content-type".to_string(), "application/json".to_string())]
+    );
+
+    let body = response.body.collect().await.expect("Should have body");
+    assert_eq!(
+        String::from_utf8_lossy(&body),
+        r#"{"url":"https://example.com/get","data":"test"}"#
+    );
+}
