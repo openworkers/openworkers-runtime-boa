@@ -798,63 +798,52 @@ fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
         )
         .build();
 
-    let subtle =
-        boa_engine::object::ObjectInitializer::new(context)
-            .function(
-                NativeFunction::from_copy_closure(|_this, args, ctx| {
-                    let algo = args
-                        .first()
-                        .and_then(|v| v.to_string(ctx).ok())
-                        .map(|s| s.to_std_string_escaped())
-                        .unwrap_or_default();
+    let subtle = boa_engine::object::ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_copy_closure(|_this, args, ctx| {
+                let algo = args
+                    .first()
+                    .and_then(|v| v.to_string(ctx).ok())
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default();
 
-                    let data: Vec<u8> = if let Some(arr) = args.get(1).and_then(|v| v.as_object()) {
-                        if let Ok(buffer_val) = arr.get(js_string!("buffer"), ctx) {
-                            if let Some(buffer_obj) = buffer_val.as_object() {
-                                if let Ok(ab) =
-                                    boa_engine::object::builtins::JsArrayBuffer::from_object(
-                                        buffer_obj.clone(),
-                                    )
-                                {
-                                    ab.data().map(|d| d.to_vec()).unwrap_or_default()
-                                } else {
-                                    Vec::new()
-                                }
-                            } else {
-                                Vec::new()
-                            }
-                        } else {
-                            Vec::new()
-                        }
-                    } else {
-                        Vec::new()
-                    };
+                let mut data: Vec<u8> = Vec::new();
 
-                    let algorithm = match algo.to_uppercase().as_str() {
-                        "SHA-1" => &digest::SHA1_FOR_LEGACY_USE_ONLY,
-                        "SHA-256" => &digest::SHA256,
-                        "SHA-384" => &digest::SHA384,
-                        "SHA-512" => &digest::SHA512,
-                        _ => {
-                            return Err(boa_engine::JsNativeError::error()
-                                .with_message(format!("Unsupported algorithm: {}", algo))
-                                .into());
-                        }
-                    };
+                if let Some(arr) = args.get(1).and_then(|v| v.as_object())
+                    && let Ok(buffer_val) = arr.get(js_string!("buffer"), ctx)
+                    && let Some(buffer_obj) = buffer_val.as_object()
+                    && let Ok(ab) =
+                        boa_engine::object::builtins::JsArrayBuffer::from_object(buffer_obj.clone())
+                    && let Some(bytes) = ab.data()
+                {
+                    data = bytes.to_vec();
+                }
 
-                    let result = digest::digest(algorithm, &data);
-                    let hex: String = result
-                        .as_ref()
-                        .iter()
-                        .map(|b| format!("{:02x}", b))
-                        .collect();
+                let algorithm = match algo.to_uppercase().as_str() {
+                    "SHA-1" => &digest::SHA1_FOR_LEGACY_USE_ONLY,
+                    "SHA-256" => &digest::SHA256,
+                    "SHA-384" => &digest::SHA384,
+                    "SHA-512" => &digest::SHA512,
+                    _ => {
+                        return Err(boa_engine::JsNativeError::error()
+                            .with_message(format!("Unsupported algorithm: {}", algo))
+                            .into());
+                    }
+                };
 
-                    Ok(JsValue::from(boa_engine::JsString::from(hex)))
-                }),
-                js_string!("__nativeDigest"),
-                2,
-            )
-            .build();
+                let result = digest::digest(algorithm, &data);
+                let hex: String = result
+                    .as_ref()
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+
+                Ok(JsValue::from(boa_engine::JsString::from(hex)))
+            }),
+            js_string!("__nativeDigest"),
+            2,
+        )
+        .build();
 
     crypto.set(js_string!("subtle"), subtle, false, context)?;
     context.register_global_property(js_string!("crypto"), crypto, Attribute::all())?;
