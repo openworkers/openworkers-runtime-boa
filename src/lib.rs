@@ -1,10 +1,8 @@
-pub mod runtime;
 pub mod snapshot;
 mod web_api;
 mod worker;
 
 // Core API
-pub use runtime::TokioJobQueue;
 pub use worker::Worker;
 
 // Re-export common types from openworkers-core
