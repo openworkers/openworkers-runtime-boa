@@ -14,6 +14,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::web_api::setup_web_apis;
 
+/// How many times to drain pending fetches and timers before giving up on a
+/// handler, so that a script chaining them forever cannot block the thread.
+const MAX_DRAIN_ROUNDS: usize = 100;
+
 /// Event listeners stored on the Rust side (following boa_runtime's pattern)
 #[derive(Default, Trace, Finalize, JsData)]
 struct EventListeners {
@@ -247,12 +251,11 @@ impl Worker {
                 TerminationReason::Exception(format!("Dispatch failed: {}", e))
             })?;
 
-        // Run jobs and process pending fetches in a loop until the outer promise resolves
         let _ = self.context.run_jobs();
 
         // Drain fetches and timers until neither yields work, so that
         // `await fetch(...)` and `setTimeout(...)` inside handlers resolve
-        for _ in 0..100 {
+        for _ in 0..MAX_DRAIN_ROUNDS {
             let fetch_count = self.resolve_pending_fetches().await;
             let timer_count = self.resolve_pending_timers().await;
 
@@ -767,7 +770,7 @@ impl Worker {
                     let _ = self.context.run_jobs();
 
                     // Drain pending timers (setTimeout inside handlers)
-                    for _ in 0..100 {
+                    for _ in 0..MAX_DRAIN_ROUNDS {
                         let timer_count = self.resolve_pending_timers().await;
 
                         if timer_count == 0 {
