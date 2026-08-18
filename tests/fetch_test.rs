@@ -238,3 +238,50 @@ async fn test_fetch_response_with_quotes_and_newlines() {
     assert_eq!(json["text"], "line1\nline2 'q' \"d\" back\\slash");
     assert_eq!(json["note"], "it's \"quoted\"");
 }
+
+/// Answers only after yielding to the reactor, which a fetch driven off the job
+/// queue has to survive.
+struct SlowOps;
+
+impl OperationsHandler for SlowOps {
+    fn handle_fetch(&self, _request: HttpRequest) -> OpFuture<'_, Result<HttpResponse, String>> {
+        Box::pin(async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            Ok(HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: ResponseBody::Bytes(Bytes::from("slow")),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_fetch_waits_for_a_slow_handler() {
+    let script = r#"
+        addEventListener('fetch', async (event) => {
+            const first = await (await fetch('https://example.com/a')).text();
+            const second = await (await fetch('https://example.com/b')).text();
+            event.respondWith(new Response(first + ',' + second));
+        });
+    "#;
+
+    let mut worker = Worker::new_with_ops(Script::new(script), None, Arc::new(SlowOps))
+        .await
+        .expect("Worker should initialize");
+
+    let request = HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    };
+
+    let (task, rx) = Event::fetch(request);
+    worker.exec(task).await.expect("Task should execute");
+
+    let response = rx.await.expect("Should receive response");
+    let body = response.body.collect().await.expect("Should have body");
+    assert_eq!(String::from_utf8_lossy(&body), "slow,slow");
+}

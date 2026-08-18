@@ -41,19 +41,21 @@ Pass a real `OperationsHandler` through `Worker::new_with_ops` to serve
 - **Web APIs** - console, timers, `fetch`, Request, Response, Headers, URL,
   URLSearchParams, Blob, File, FormData, AbortController, ReadableStream,
   TextEncoder/TextDecoder, atob/btoa, structuredClone, queueMicrotask.
-  console, URL, TextEncoder/TextDecoder, atob/btoa and structuredClone come
-  from `boa_runtime`; the rest are ours
+  console, timers, `fetch`, AbortController, URL, TextEncoder/TextDecoder,
+  atob/btoa and structuredClone come from `boa_runtime`; the rest are ours
+- **Logs** - `console` and uncaught handler errors go to the `OperationsHandler`
+- **Request lifetime** - the response goes out as soon as `respondWith` settles,
+  and the timers and fetches still pending behind it are dropped
 - **Crypto** - `getRandomValues`, `randomUUID`, `subtle.digest`
 - **Async/await** - full Promise support
 
 ## Not supported
 
-- **RuntimeLimits** - CPU, wall clock and memory limits are accepted and ignored
+- **CPU and memory limits** - only `max_wall_clock_time_ms` is enforced
 - **Bindings** - `env` and the KV/storage/database/worker bindings are not exposed to JS
 - **ES modules** - only `addEventListener`, not `export default { fetch }`
-- **Console capture** - console writes to stdout and stderr instead of the
-  OperationsHandler
 - **Streaming bodies** - `RequestBody::Stream` and `ResponseBody::Stream` are not read
+- **`event.waitUntil`** - the fetch event has no `waitUntil`
 - **Binary bodies** - request and response bodies round-trip as lossy UTF-8
 - **Snapshots** - Boa has no equivalent of the V8 startup snapshot
 
