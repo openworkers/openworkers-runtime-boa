@@ -107,25 +107,28 @@ fn setup_base64(context: &mut Context) -> Result<(), boa_engine::JsError> {
     Ok(())
 }
 
+/// Setup URL and URLSearchParams
+///
+/// URL parsing is upstream's, backed by the `url` crate. Upstream has no
+/// URLSearchParams, so it is layered on top and the URL stays the source of
+/// truth: reads re-parse `search`, writes assign it back.
 fn setup_url(context: &mut Context) -> Result<(), boa_engine::JsError> {
+    boa_runtime::url::Url::register(None, context)?;
+
     context.eval(boa_engine::Source::from_bytes(
         r#"
         globalThis.URLSearchParams = class URLSearchParams {
             constructor(init) {
                 this._entries = [];
+                this._url = null;
+                this._lastSearch = null;
 
                 if (!init) return;
 
                 if (typeof init === 'string') {
-                    const str = init.startsWith('?') ? init.slice(1) : init;
-                    if (str) {
-                        for (const pair of str.split('&')) {
-                            const [key, value = ''] = pair.split('=').map(decodeURIComponent);
-                            this._entries.push([key, value]);
-                        }
-                    }
+                    this._entries = URLSearchParams._parse(init);
                 } else if (init instanceof URLSearchParams) {
-                    this._entries = [...init._entries];
+                    this._entries = init._all().map(([k, v]) => [k, v]);
                 } else if (Array.isArray(init)) {
                     for (const [key, value] of init) {
                         this._entries.push([String(key), String(value)]);
@@ -137,73 +140,118 @@ fn setup_url(context: &mut Context) -> Result<(), boa_engine::JsError> {
                 }
             }
 
+            static _parse(str) {
+                const query = str.startsWith('?') ? str.slice(1) : str;
+                const entries = [];
+
+                if (!query) return entries;
+
+                for (const pair of query.split('&')) {
+                    if (!pair) continue;
+
+                    const eq = pair.indexOf('=');
+                    const rawKey = eq === -1 ? pair : pair.slice(0, eq);
+                    const rawValue = eq === -1 ? '' : pair.slice(eq + 1);
+
+                    entries.push([
+                        decodeURIComponent(rawKey.replace(/\+/g, ' ')),
+                        decodeURIComponent(rawValue.replace(/\+/g, ' '))
+                    ]);
+                }
+
+                return entries;
+            }
+
+            static _encode(str) {
+                return encodeURIComponent(str).replace(/%20/g, '+');
+            }
+
+            _all() {
+                if (this._url && this._url.search !== this._lastSearch) {
+                    this._lastSearch = this._url.search;
+                    this._entries = URLSearchParams._parse(this._lastSearch);
+                }
+
+                return this._entries;
+            }
+
+            _serialize() {
+                return this._entries
+                    .map(([k, v]) => URLSearchParams._encode(k) + '=' + URLSearchParams._encode(v))
+                    .join('&');
+            }
+
+            _sync() {
+                if (!this._url) return;
+
+                const query = this._serialize();
+                this._lastSearch = query ? '?' + query : '';
+                this._url.search = this._lastSearch;
+            }
+
             append(name, value) {
-                this._entries.push([String(name), String(value)]);
+                this._all().push([String(name), String(value)]);
+                this._sync();
             }
 
             delete(name) {
-                this._entries = this._entries.filter(([k]) => k !== name);
+                const key = String(name);
+                this._entries = this._all().filter(([k]) => k !== key);
+                this._sync();
             }
 
             get(name) {
-                const entry = this._entries.find(([k]) => k === name);
+                const entry = this._all().find(([k]) => k === String(name));
                 return entry ? entry[1] : null;
             }
 
             getAll(name) {
-                return this._entries.filter(([k]) => k === name).map(([, v]) => v);
+                return this._all().filter(([k]) => k === String(name)).map(([, v]) => v);
             }
 
             has(name) {
-                return this._entries.some(([k]) => k === name);
+                return this._all().some(([k]) => k === String(name));
             }
 
             set(name, value) {
-                const strName = String(name);
-                const strValue = String(value);
-                let found = false;
-                this._entries = this._entries.filter(([k]) => {
-                    if (k === strName) {
-                        if (!found) {
-                            found = true;
-                            return true;
-                        }
-                        return false;
-                    }
-                    return true;
-                });
-                if (found) {
-                    const idx = this._entries.findIndex(([k]) => k === strName);
-                    this._entries[idx][1] = strValue;
+                const key = String(name);
+                const entries = this._all();
+                const idx = entries.findIndex(([k]) => k === key);
+
+                if (idx === -1) {
+                    entries.push([key, String(value)]);
                 } else {
-                    this._entries.push([strName, strValue]);
+                    entries[idx][1] = String(value);
+                    this._entries = entries.filter(([k], i) => k !== key || i === idx);
                 }
+
+                this._sync();
             }
 
             sort() {
-                this._entries.sort((a, b) => a[0].localeCompare(b[0]));
+                this._all().sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+                this._sync();
             }
 
             toString() {
-                return this._entries
-                    .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v))
-                    .join('&');
+                this._all();
+                return this._serialize();
             }
 
             *entries() {
-                yield* this._entries;
+                yield* this._all().map(([k, v]) => [k, v]);
             }
 
             *keys() {
-                for (const [k] of this._entries) yield k;
+                for (const [k] of this._all()) yield k;
             }
 
             *values() {
-                for (const [, v] of this._entries) yield v;
+                for (const [, v] of this._all()) yield v;
             }
 
             forEach(callback, thisArg) {
-                for (const [key, value] of this._entries) {
+                for (const [key, value] of this._all()) {
                     callback.call(thisArg, value, key, this);
                 }
             }
@@ -213,51 +261,29 @@ fn setup_url(context: &mut Context) -> Result<(), boa_engine::JsError> {
             }
 
             get size() {
-                return this._entries.length;
+                return this._all().length;
             }
         };
 
-        globalThis.URL = class URL {
-            constructor(url, base) {
-                if (base) {
-                    const baseUrl = typeof base === 'string' ? base : base.href;
-                    if (url.startsWith('/')) {
-                        const match = baseUrl.match(/^(https?:\/\/[^\/]+)/);
-                        url = match ? match[1] + url : url;
-                    } else if (!url.match(/^https?:\/\//)) {
-                        url = baseUrl.replace(/\/[^\/]*$/, '/') + url;
+        (function() {
+            const bound = new WeakMap();
+
+            Object.defineProperty(URL.prototype, 'searchParams', {
+                configurable: true,
+                get: function() {
+                    let params = bound.get(this);
+
+                    if (!params) {
+                        params = new URLSearchParams(this.search);
+                        params._url = this;
+                        params._lastSearch = this.search;
+                        bound.set(this, params);
                     }
-                }
 
-                this.href = url;
-                const match = url.match(/^(https?):\/\/([^\/\?#]+)(\/[^\?#]*)?(\?[^#]*)?(#.*)?$/);
-                if (match) {
-                    this.protocol = match[1] + ':';
-                    this.host = match[2];
-                    this.hostname = match[2].split(':')[0];
-                    this.port = match[2].includes(':') ? match[2].split(':')[1] : '';
-                    this.pathname = match[3] || '/';
-                    this.search = match[4] || '';
-                    this.hash = match[5] || '';
-                    this.origin = this.protocol + '//' + this.host;
-                    this.searchParams = new URLSearchParams(this.search);
-                } else {
-                    this.protocol = '';
-                    this.host = '';
-                    this.hostname = '';
-                    this.port = '';
-                    this.pathname = url;
-                    this.search = '';
-                    this.hash = '';
-                    this.origin = '';
-                    this.searchParams = new URLSearchParams();
+                    return params;
                 }
-            }
-
-            toString() {
-                return this.href;
-            }
-        };
+            });
+        })();
         "#,
     ))?;
     Ok(())
