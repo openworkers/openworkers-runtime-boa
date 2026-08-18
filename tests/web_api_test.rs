@@ -39,3 +39,14 @@ async fn test_queue_microtask_runs_before_return() {
 
     assert_eq!(out, "yes");
 }
+
+#[tokio::test]
+async fn test_response_error_keeps_its_status() {
+    let out = eval(
+        "const r = Response.error();
+         return [r.status, r.ok, r.type].join('|');",
+    )
+    .await;
+
+    assert_eq!(out, "0|false|error");
+}

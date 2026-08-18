@@ -691,7 +691,7 @@ fn setup_response(context: &mut Context) -> Result<(), boa_engine::JsError> {
         globalThis.Response = class Response {
             constructor(body, init) {
                 init = init || {};
-                this.status = init.status || 200;
+                this.status = init.status ?? 200;
                 this.statusText = init.statusText || '';
                 this.ok = this.status >= 200 && this.status < 300;
                 this.bodyUsed = false;
