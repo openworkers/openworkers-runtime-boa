@@ -1,18 +1,12 @@
-/// Snapshot support (not implemented for Boa)
-///
-/// Boa doesn't have the same snapshot capabilities as V8/Deno.
-/// This module provides stub implementations for compatibility.
+//! Snapshot stubs
+//!
+//! Boa has no equivalent of the V8 startup snapshot, so the runner gets the
+//! same module surface as the other runtimes but no working implementation.
 
-/// Snapshot output structure
 pub struct SnapshotOutput {
     pub output: Vec<u8>,
 }
 
-/// Create a runtime snapshot (not supported in Boa)
 pub fn create_runtime_snapshot() -> Result<SnapshotOutput, String> {
-    // Return empty snapshot - Boa doesn't support snapshots like V8
-    eprintln!("Warning: Snapshots are not supported in Boa runtime");
-    eprintln!("Returning empty snapshot for compatibility");
-
-    Ok(SnapshotOutput { output: Vec::new() })
+    Err("Boa runtime does not support snapshots".to_string())
 }
