@@ -180,13 +180,16 @@ impl Worker {
         &mut self,
         request: HttpRequest,
     ) -> Result<HttpResponse, TerminationReason> {
+        // A script is free to overwrite the helper, so this is not an invariant
         let dispatch = self
             .context
             .global_object()
             .get(js_string!("__dispatchFetch"), &mut self.context)
             .ok()
             .and_then(|v| v.as_object().and_then(JsFunction::from_object))
-            .expect("__dispatchFetch is registered at init");
+            .ok_or_else(|| {
+                TerminationReason::Other("__dispatchFetch is not callable".to_string())
+            })?;
 
         let headers = JsObject::with_object_proto(self.context.intrinsics());
 

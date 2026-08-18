@@ -453,3 +453,25 @@ async fn test_request_url_and_headers_with_quotes() {
         format!("{}|{}", url, note)
     );
 }
+
+#[tokio::test]
+async fn test_script_dropping_the_dispatch_helper_is_an_error() {
+    let code = r#"
+        addEventListener('fetch', (event) => { event.respondWith(new Response('hi')); });
+        delete globalThis.__dispatchFetch;
+    "#;
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let req = HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    };
+
+    let (event, _rx) = Event::fetch(req);
+
+    assert!(worker.exec(event).await.is_err());
+}
