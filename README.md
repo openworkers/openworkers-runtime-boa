@@ -5,7 +5,7 @@ Pure Rust JavaScript runtime for serverless workers, built on [Boa](https://gith
 ## Quick Start
 
 ```rust
-use openworkers_runtime_boa::{Worker, Script, Event, HttpRequest, HttpMethod, RequestBody};
+use openworkers_runtime_boa::{Event, HttpMethod, HttpRequest, RequestBody, Script, Worker};
 use std::collections::HashMap;
 
 let script = Script::new(r#"
@@ -29,13 +29,30 @@ worker.exec(task).await?;
 let response = rx.await?;
 ```
 
-## Features
+`Worker::new` runs with `DefaultOps`, which rejects every outbound operation.
+Pass a real `OperationsHandler` through `Worker::new_with_ops` to serve
+`fetch()` from the host.
 
-- **100% Rust** — No C/C++ dependencies, builds anywhere
-- **Fast cold start** — No JIT warmup
-- **Web APIs** — fetch, setTimeout, Response, Request, URL, console
-- **Async/await** — Full Promise support
-- **Streaming** — ReadableStream support
+## Supported
+
+- **100% Rust** - no C/C++ dependencies, builds anywhere
+- **Fast cold start** - no JIT warmup
+- **Events** - `addEventListener('fetch')` and `addEventListener('scheduled')`
+- **Web APIs** - console, timers, `fetch`, Request, Response, Headers, URL,
+  URLSearchParams, Blob, File, FormData, AbortController, ReadableStream,
+  TextEncoder/TextDecoder, atob/btoa, structuredClone
+- **Crypto** - `getRandomValues`, `randomUUID`, `subtle.digest`
+- **Async/await** - full Promise support
+
+## Not supported
+
+- **RuntimeLimits** - CPU, wall clock and memory limits are accepted and ignored
+- **Bindings** - `env` and the KV/storage/database/worker bindings are not exposed to JS
+- **ES modules** - only `addEventListener`, not `export default { fetch }`
+- **Console capture** - console writes to stderr instead of the OperationsHandler
+- **Streaming bodies** - `RequestBody::Stream` and `ResponseBody::Stream` are not read
+- **Binary bodies** - request and response bodies round-trip as lossy UTF-8
+- **Snapshots** - Boa has no equivalent of the V8 startup snapshot
 
 ## Testing
 
@@ -45,7 +62,7 @@ cargo test
 
 ## Status
 
-See [TODO.md](TODO.md) for current limitations and roadmap.
+See [TODO.md](TODO.md) for the roadmap.
 
 ## License
 
