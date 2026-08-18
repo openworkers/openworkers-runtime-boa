@@ -50,3 +50,36 @@ async fn test_response_error_keeps_its_status() {
 
     assert_eq!(out, "0|false|error");
 }
+
+#[tokio::test]
+async fn test_abort_controller_reaches_its_listeners() {
+    let out = eval(
+        "const controller = new AbortController();
+         let seen = 'no';
+         controller.signal.addEventListener('abort', () => { seen = 'yes'; });
+         controller.abort();
+         await new Promise((resolve) => setTimeout(resolve, 0));
+         return [controller.signal.aborted, controller.signal.reason.name, seen].join('|');",
+    )
+    .await;
+
+    assert_eq!(out, "true|AbortError|yes");
+}
+
+#[tokio::test]
+async fn test_aborted_signal_rejects_fetch() {
+    let out = eval(
+        "const controller = new AbortController();
+         controller.abort();
+
+         try {
+             await fetch('https://example.com/', { signal: controller.signal });
+             return 'resolved';
+         } catch (e) {
+             return e.name;
+         }",
+    )
+    .await;
+
+    assert_eq!(out, "AbortError");
+}

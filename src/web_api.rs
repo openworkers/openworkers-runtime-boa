@@ -378,67 +378,23 @@ fn setup_form_data(context: &mut Context) -> Result<(), boa_engine::JsError> {
     Ok(())
 }
 
+/// `boa_runtime`'s AbortSignal has no way to build a standalone signal, so the
+/// two statics are layered on an AbortController.
 fn setup_abort_controller(context: &mut Context) -> Result<(), boa_engine::JsError> {
+    boa_runtime::abort::register(None, context)?;
+
     context.eval(boa_engine::Source::from_bytes(
         r#"
-        globalThis.AbortSignal = class AbortSignal {
-            constructor() {
-                this.aborted = false;
-                this.reason = undefined;
-                this._listeners = [];
-            }
-
-            addEventListener(type, listener) {
-                if (type === 'abort') {
-                    this._listeners.push(listener);
-                }
-            }
-
-            removeEventListener(type, listener) {
-                if (type === 'abort') {
-                    this._listeners = this._listeners.filter(l => l !== listener);
-                }
-            }
-
-            throwIfAborted() {
-                if (this.aborted) {
-                    throw this.reason;
-                }
-            }
-
-            _abort(reason) {
-                if (this.aborted) return;
-                this.aborted = true;
-                this.reason = reason;
-                const event = { type: 'abort', target: this };
-                for (const listener of this._listeners) {
-                    try { listener(event); } catch (e) { console.error(e); }
-                }
-            }
-
-            static abort(reason) {
-                const signal = new AbortSignal();
-                signal._abort(reason || new DOMException('Aborted', 'AbortError'));
-                return signal;
-            }
-
-            static timeout(ms) {
-                const signal = new AbortSignal();
-                setTimeout(() => {
-                    signal._abort(new DOMException('Timeout', 'TimeoutError'));
-                }, ms);
-                return signal;
-            }
+        AbortSignal.abort = function(reason) {
+            const controller = new AbortController();
+            controller.abort(reason);
+            return controller.signal;
         };
 
-        globalThis.AbortController = class AbortController {
-            constructor() {
-                this.signal = new AbortSignal();
-            }
-
-            abort(reason) {
-                this.signal._abort(reason || new DOMException('Aborted', 'AbortError'));
-            }
+        AbortSignal.timeout = function(ms) {
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(new DOMException('Timeout', 'TimeoutError')), ms);
+            return controller.signal;
         };
         "#,
     ))?;

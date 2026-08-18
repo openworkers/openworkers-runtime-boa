@@ -1082,6 +1082,8 @@ fn setup_fetch_shim(context: &mut Context) -> Result<(), boa_engine::JsError> {
                     options.body = String(init.body);
                 }
 
+                if (init.signal) options.signal = init.signal;
+
                 var response = await native(request ? String(request.url) : String(input), options);
                 var headers = new Headers();
 
