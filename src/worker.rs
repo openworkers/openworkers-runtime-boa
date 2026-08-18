@@ -263,7 +263,6 @@ impl Worker {
         }
     }
 
-    /// Returns how many fetches were run, so the caller knows whether to loop again.
     async fn resolve_pending_fetches(&mut self) -> usize {
         let pending_arr = match self
             .context

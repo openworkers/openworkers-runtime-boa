@@ -4,8 +4,8 @@
 
 - [ ] **Enforce RuntimeLimits** - `limits` is accepted and ignored, so a worker can
       spin forever; no CPU, wall clock or heap ceiling
-- [ ] **Wire console to OperationsHandler** - console writes to stderr, so the runner
-      cannot collect worker logs
+- [ ] **Wire console to OperationsHandler** - console writes to stdout and stderr, so
+      the runner cannot collect worker logs; `boa_runtime::console::Logger` is the hook
 - [ ] **Binary-safe bodies** - request and response bodies go through JS as lossy
       UTF-8 strings, which corrupts any non-text payload
 
