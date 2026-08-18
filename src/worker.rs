@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, Finalize, JsData, JsValue, NativeFunction, Source, Trace,
+    Context, Finalize, JsData, JsObject, JsString, JsValue, NativeFunction, Source, Trace,
     builtins::promise::PromiseState, job::PromiseJob, js_string, object::builtins::JsFunction,
     property::Attribute,
 };
@@ -179,72 +179,51 @@ impl Worker {
 
     /// Handle a fetch event
     ///
-    /// Dispatch happens entirely in JS to avoid Boa 0.21 environment panics
-    /// when calling stored functions from Rust that instantiate Response/ReadableStream.
+    /// The event object and the handler loop live in JS, called through the
+    /// helper registered at init so that nothing is parsed per request.
     async fn handle_fetch(
         &mut self,
         request: HttpRequest,
     ) -> Result<HttpResponse, TerminationReason> {
+        let dispatch = self
+            .context
+            .global_object()
+            .get(js_string!("__dispatchFetch"), &mut self.context)
+            .ok()
+            .and_then(|v| v.as_object().and_then(JsFunction::from_object))
+            .expect("__dispatchFetch is registered at init");
+
+        let headers = JsObject::with_object_proto(self.context.intrinsics());
+
+        for (name, value) in &request.headers {
+            headers
+                .set(
+                    JsString::from(name.as_str()),
+                    JsString::from(value.as_str()),
+                    false,
+                    &mut self.context,
+                )
+                .map_err(|e| {
+                    TerminationReason::Exception(format!("Request headers rejected: {}", e))
+                })?;
+        }
+
         let body = match &request.body {
-            RequestBody::Bytes(b) if !b.is_empty() => Some(String::from_utf8_lossy(b).into_owned()),
-            RequestBody::Bytes(_) | RequestBody::None | RequestBody::Stream(_) => None,
+            RequestBody::Bytes(b) if !b.is_empty() => {
+                JsValue::from(JsString::from(String::from_utf8_lossy(b).as_ref()))
+            }
+            RequestBody::Bytes(_) | RequestBody::None | RequestBody::Stream(_) => JsValue::null(),
         };
 
-        let init = js_literal(&serde_json::json!({
-            "url": request.url,
-            "method": request.method.to_string(),
-            "headers": request.headers,
-            "body": body,
-        }));
+        let args = [
+            JsValue::from(JsString::from(request.url.as_str())),
+            JsValue::from(JsString::from(request.method.to_string())),
+            JsValue::from(headers),
+            body,
+        ];
 
-        // Create event, dispatch handlers, extract response, all in JS.
-        // Uses async IIFE to properly handle: async handlers, Promise-based respondWith,
-        // and error handling. Returns a Promise that resolves to the Response object.
-        let dispatch_code = format!(
-            r#"(async function() {{
-                var handlers = globalThis.__fetchHandlers || [];
-                if (handlers.length === 0) throw new Error('__no_handlers__');
-
-                var init = {};
-
-                var request = new Request(init.url, {{
-                    method: init.method,
-                    headers: init.headers,
-                    body: init.body
-                }});
-
-                var event = {{
-                    type: 'fetch',
-                    request: request,
-                    _response: null,
-                    respondWith: function(r) {{ this._response = r; }}
-                }};
-
-                for (var i = 0; i < handlers.length; i++) {{
-                    try {{
-                        await handlers[i](event);
-                    }} catch(e) {{
-                        if (!event._response) {{
-                            event._response = new Response(
-                                'Error: ' + (e.message || e), {{ status: 500 }}
-                            );
-                        }}
-                    }}
-                }}
-
-                var response = event._response;
-                if (response && typeof response.then === 'function') {{
-                    response = await response;
-                }}
-
-                return response;
-            }})()"#,
-            init
-        );
-
-        let result = self
-            .context
-            .eval(Source::from_bytes(dispatch_code.as_bytes()))
+        let result = dispatch
+            .call(&JsValue::undefined(), &args, &mut self.context)
             .map_err(|e| {
                 let msg = format!("{}", e);
 
@@ -1531,6 +1510,33 @@ fn setup_event_handling(context: &mut Context) -> Result<(), boa_engine::JsError
         globalThis.removeEventListener = function(type) {
             if (type === 'fetch') __fetchHandlers = [];
             else if (type === 'scheduled') __scheduledHandlers = [];
+        };
+
+        globalThis.__dispatchFetch = async function(url, method, headers, body) {
+            var handlers = globalThis.__fetchHandlers;
+
+            if (handlers.length === 0) throw new Error('__no_handlers__');
+
+            var event = {
+                type: 'fetch',
+                request: new Request(url, { method: method, headers: headers, body: body }),
+                _response: null,
+                respondWith: function(r) { this._response = r; }
+            };
+
+            for (var i = 0; i < handlers.length; i++) {
+                try {
+                    await handlers[i](event);
+                } catch (e) {
+                    if (!event._response) {
+                        event._response = new Response(
+                            'Error: ' + (e.message || e), { status: 500 }
+                        );
+                    }
+                }
+            }
+
+            return await event._response;
         };
         "#,
     ))?;
