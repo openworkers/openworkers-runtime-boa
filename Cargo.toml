@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runtime-boa"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 
 [features]
@@ -9,7 +9,7 @@ actix = ["dep:actix-web", "openworkers-core/actix"]
 [dependencies]
 # Common types
 # openworkers-core = { path = "../openworkers-core" }
-openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.13.1", features = ["hyper"] }
+openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.14.0", features = ["hyper"] }
 
 # Boa JavaScript engine (pinned to main for ICU 2.1 compat with v8)
 boa_engine = { git = "https://github.com/boa-dev/boa", rev = "07ebe591c721307f110cc4b082f03d7d62f4a352", package = "boa_engine" }

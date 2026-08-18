@@ -1618,8 +1618,8 @@ checksum = "cfe21416a02c693fb9f980befcb230ecc70b0b3d1cc4abf88b9675c4c1457f0c"
 
 [[package]]
 name = "openworkers-core"
-version = "0.13.1"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.13.1#cc945845911c7200233b64edf7c6a3105b51d889"
+version = "0.14.0"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.14.0#cde0327cedeb21af4a540312479f91282e7ac0be"
 dependencies = [
  "actix-web",
  "bytes",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-boa"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "actix-web",
  "boa_engine",
