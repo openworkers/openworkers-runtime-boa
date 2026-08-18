@@ -88,6 +88,20 @@ async fn test_search_params_decoding() {
 }
 
 #[tokio::test]
+async fn test_search_params_agree_with_url_on_encoding() {
+    let out = eval(
+        "const u = new URL('https://example.com/');
+         const p = u.searchParams;
+         p.set('k', \"it's (~fine!)\");
+         return [u.search, '?' + p.toString()].join('|');",
+    )
+    .await;
+
+    let expected = "?k=it%27s+%28%7Efine%21%29";
+    assert_eq!(out, format!("{}|{}", expected, expected));
+}
+
+#[tokio::test]
 async fn test_search_params_set_replaces_duplicates() {
     let out = eval(
         "const p = new URLSearchParams('a=1&a=2&b=3');

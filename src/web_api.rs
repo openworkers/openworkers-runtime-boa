@@ -98,7 +98,10 @@ fn setup_url(context: &mut Context) -> Result<(), boa_engine::JsError> {
             }
 
             static _encode(str) {
-                return encodeURIComponent(str).replace(/%20/g, '+');
+                // encodeURIComponent keeps !'()~, which the urlencoded serializer escapes
+                return encodeURIComponent(str)
+                    .replace(/[!'()~]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
+                    .replace(/%20/g, '+');
             }
 
             _all() {
