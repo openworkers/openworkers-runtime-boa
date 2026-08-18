@@ -50,58 +50,42 @@ impl Worker {
     ) -> Result<Self, TerminationReason> {
         let mut context = Context::default();
 
-        eprintln!("[DEBUG] Starting Worker initialization");
-
-        // Setup console that routes to OperationsHandler
         setup_console_with_ops(&mut context, ops.clone()).map_err(|e| {
             TerminationReason::InitializationError(format!("Failed to register console: {}", e))
         })?;
-        eprintln!("[DEBUG] Console setup complete");
 
-        // Setup crypto (getRandomValues, randomUUID, subtle.digest)
         setup_crypto(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!("Failed to register crypto: {}", e))
         })?;
-        eprintln!("[DEBUG] Crypto setup complete");
 
-        // Setup TextEncoder/TextDecoder
         setup_text_encoding(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!(
                 "Failed to register text encoding: {}",
                 e
             ))
         })?;
-        eprintln!("[DEBUG] TextEncoding setup complete");
 
-        // Setup timers (setTimeout, setInterval, clearTimeout, clearInterval)
-        // Must be before web APIs since AbortSignal.timeout uses setTimeout
+        // Timers must come before the web APIs, AbortSignal.timeout uses setTimeout
         setup_timers(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!("Failed to register timers: {}", e))
         })?;
-        eprintln!("[DEBUG] Timers setup complete");
 
-        // Setup ReadableStream (must be before web APIs since Request/Response use it)
+        // ReadableStream must come before the web APIs, Request/Response bodies are streams
         setup_readable_stream(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!(
                 "Failed to register ReadableStream: {}",
                 e
             ))
         })?;
-        eprintln!("[DEBUG] ReadableStream setup complete");
 
-        // Setup Web APIs (Headers, Request, Response, URL, Blob, FormData, etc.)
         setup_web_apis(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!("Failed to register web APIs: {}", e))
         })?;
-        eprintln!("[DEBUG] Web APIs setup complete");
 
-        // Setup fetch() global (stub — will be wired to OperationsHandle later)
         setup_fetch_global(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!("Failed to register fetch: {}", e))
         })?;
-        eprintln!("[DEBUG] Fetch global setup complete");
 
-        // Setup event handling (addEventListener, dispatchEvent)
         setup_event_handling(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!(
                 "Failed to register event handling: {}",
@@ -109,27 +93,22 @@ impl Worker {
             ))
         })?;
 
-        // Setup response extraction helpers (used by handle_fetch)
         setup_response_extractors(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!(
                 "Failed to register response extractors: {}",
                 e
             ))
         })?;
-        eprintln!("[DEBUG] Event handling setup complete");
 
-        // Evaluate user script
         let js_code = script.code.as_js().ok_or_else(|| {
             TerminationReason::InitializationError(
                 "Boa runtime only supports JavaScript code".to_string(),
             )
         })?;
 
-        eprintln!("[DEBUG] Evaluating user script...");
         context.eval(Source::from_bytes(js_code)).map_err(|e| {
             TerminationReason::Exception(format!("Script evaluation failed: {}", e))
         })?;
-        eprintln!("[DEBUG] User script evaluation complete");
 
         Ok(Self {
             context,
