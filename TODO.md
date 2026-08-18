@@ -15,15 +15,17 @@
       bindings, routed to `handle_binding_*`
 - [ ] **Streaming bodies** - `RequestBody::Stream` is dropped and responses are
       always collected into `ResponseBody::Bytes`
-- [ ] **ES Modules support** - `export default { fetch() {} }` style handlers
-- [ ] **Replace the eval-based dispatch** - handle_fetch generates JS source per
-      request because calling stored handlers from Rust panics in Boa 0.21
+- [ ] **ES Modules support** - `export default { fetch() {} }` style handlers,
+      which the runner currently lowers to `globalThis.default` before us
+- [ ] **Build fetch() responses without eval** - `resolve_pending_fetches` still
+      generates a `new Response(...)` snippet per outbound fetch
 
 ## Low Priority
 
 - [ ] **Fill out crypto.subtle** - only `digest` exists; no sign, verify, importKey
       or deriveBits
-- [ ] **Benchmark suite** - automated perf comparison with V8
+- [ ] **Benchmark suite** - `examples/ssr_bench.rs` covers SvelteKit SSR, nothing
+      else is automated
 
 ## Won't Do (N/A for Boa)
 
