@@ -203,6 +203,12 @@ impl Worker {
         &mut self,
         request: HttpRequest,
     ) -> Result<HttpResponse, TerminationReason> {
+        if self.fetch_handler_count() == 0 {
+            return Err(TerminationReason::Other(
+                "No fetch handlers registered".to_string(),
+            ));
+        }
+
         // A script is free to overwrite the helper, so this is not an invariant
         let dispatch = self
             .context
@@ -245,15 +251,7 @@ impl Worker {
 
         let result = dispatch
             .call(&JsValue::undefined(), &args, &mut self.context)
-            .map_err(|e| {
-                let msg = format!("{}", e);
-
-                if msg.contains("__no_handlers__") {
-                    return TerminationReason::Other("No fetch handlers registered".to_string());
-                }
-
-                TerminationReason::Exception(format!("Dispatch failed: {}", e))
-            })?;
+            .map_err(|e| TerminationReason::Exception(format!("Dispatch failed: {}", e)))?;
 
         let Some(promise) = result.as_promise() else {
             return self.extract_response_from_js(&result);
@@ -271,6 +269,17 @@ impl Worker {
                 "Fetch handler did not complete".to_string(),
             )),
         }
+    }
+
+    fn fetch_handler_count(&mut self) -> u32 {
+        self.context
+            .global_object()
+            .get(js_string!("__fetchHandlers"), &mut self.context)
+            .ok()
+            .and_then(|v| v.as_object())
+            .and_then(|arr| arr.get(js_string!("length"), &mut self.context).ok())
+            .and_then(|len| len.to_u32(&mut self.context).ok())
+            .unwrap_or(0)
     }
 
     /// Runs the event loop until `promise` settles, then drops whatever is still
@@ -990,8 +999,6 @@ fn setup_event_handling(context: &mut Context) -> Result<(), boa_engine::JsError
 
         globalThis.__dispatchFetch = async function(url, method, headers, body) {
             var handlers = globalThis.__fetchHandlers;
-
-            if (handlers.length === 0) throw new Error('__no_handlers__');
 
             var event = {
                 type: 'fetch',
