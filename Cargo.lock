@@ -440,6 +440,7 @@ dependencies = [
  "cow-utils",
  "dashmap",
  "dynify",
+ "either",
  "fast-float2",
  "float16",
  "futures-concurrency",
@@ -483,6 +484,7 @@ dependencies = [
  "arrayvec",
  "boa_macros",
  "boa_string",
+ "either",
  "hashbrown 0.17.1",
  "thin-vec",
 ]
@@ -541,9 +543,12 @@ dependencies = [
  "boa_gc",
  "boa_wintertc",
  "bytemuck",
+ "either",
  "futures",
  "futures-lite",
+ "http 1.5.0",
  "rustc-hash",
+ "serde_json",
  "url",
 ]
 
@@ -1943,6 +1948,7 @@ dependencies = [
  "boa_runtime",
  "bytes",
  "env_logger",
+ "http 1.5.0",
  "openworkers-core",
  "openworkers-transform",
  "ring",

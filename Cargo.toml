@@ -15,7 +15,7 @@ openworkers-core = { git = "https://github.com/openworkers/openworkers-core", ta
 # Boa JavaScript engine (main, no release carries the fixes this runtime needs)
 boa_engine = { git = "https://github.com/boa-dev/boa", rev = "93a9e31a83bbaa15bbd8b687e61639ffc53bbef1", package = "boa_engine" }
 boa_gc = { git = "https://github.com/boa-dev/boa", rev = "93a9e31a83bbaa15bbd8b687e61639ffc53bbef1", package = "boa_gc" }
-boa_runtime = { git = "https://github.com/boa-dev/boa", rev = "93a9e31a83bbaa15bbd8b687e61639ffc53bbef1", package = "boa_runtime", default-features = false, features = ["url"] }
+boa_runtime = { git = "https://github.com/boa-dev/boa", rev = "93a9e31a83bbaa15bbd8b687e61639ffc53bbef1", package = "boa_runtime", default-features = false, features = ["fetch", "url"] }
 
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
@@ -26,6 +26,8 @@ serde_json = "1.0"
 
 # HTTP
 bytes = { version = "1.11", features = ["serde"] }
+# The request and response types boa_runtime's Fetcher trait speaks
+http = "1"
 
 # Crypto
 ring = "0.17"

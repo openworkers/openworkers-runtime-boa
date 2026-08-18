@@ -1,6 +1,9 @@
 use boa_engine::{
     Context, Finalize, JsData, JsObject, JsString, JsValue, NativeFunction, Source, Trace,
-    builtins::promise::PromiseState, job::PromiseJob, js_string, object::builtins::JsFunction,
+    builtins::promise::PromiseState,
+    context::ContextBuilder,
+    js_string,
+    object::builtins::{JsArray, JsFunction, JsPromise},
     property::Attribute,
 };
 use boa_gc::{Gc, GcRefCell};
@@ -9,15 +12,15 @@ use openworkers_core::{
     DefaultOps, Event, HttpRequest, HttpResponse, OperationsHandle, RequestBody, ResponseBody,
     RuntimeLimits, Script, TaskResult, TerminationReason,
 };
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
-use crate::ops::OpsLogger;
+use crate::jobs::{Stop, WorkerJobs};
+use crate::ops::{OpsFetcher, OpsLogger};
 use crate::web_api::setup_web_apis;
-
-/// Caps the drain loop, so a script chaining fetches and timers forever cannot
-/// hold the thread.
-const MAX_DRAIN_ROUNDS: usize = 100;
 
 /// Fetch handlers are kept in a JS array instead, because the dispatch loop
 /// that reads them is itself JS.
@@ -41,17 +44,26 @@ impl EventListeners {
 
 pub struct Worker {
     context: Context,
+    jobs: Rc<WorkerJobs>,
+    budget: Option<Duration>,
     aborted: Arc<AtomicBool>,
-    ops: OperationsHandle,
 }
 
 impl Worker {
     pub async fn new_with_ops(
         script: Script,
-        _limits: Option<RuntimeLimits>,
+        limits: Option<RuntimeLimits>,
         ops: OperationsHandle,
     ) -> Result<Self, TerminationReason> {
-        let mut context = Context::default();
+        let limits = limits.unwrap_or_default();
+        let jobs = Rc::new(WorkerJobs::default());
+
+        let mut context = ContextBuilder::new()
+            .job_executor(jobs.clone())
+            .build()
+            .map_err(|e| {
+                TerminationReason::InitializationError(format!("Failed to build context: {}", e))
+            })?;
 
         boa_runtime::console::Console::register_with_logger(
             OpsLogger::new(ops.clone()),
@@ -73,7 +85,7 @@ impl Worker {
         })?;
 
         // Timers must come before the web APIs, AbortSignal.timeout uses setTimeout
-        setup_timers(&mut context).map_err(|e| {
+        boa_runtime::interval::register(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!("Failed to register timers: {}", e))
         })?;
 
@@ -85,12 +97,17 @@ impl Worker {
             ))
         })?;
 
+        // Registers Headers, Request and Response too; the web APIs replace those
+        boa_runtime::fetch::register(OpsFetcher::new(ops.clone()), None, &mut context).map_err(
+            |e| TerminationReason::InitializationError(format!("Failed to register fetch: {}", e)),
+        )?;
+
         setup_web_apis(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!("Failed to register web APIs: {}", e))
         })?;
 
-        setup_fetch_global(&mut context).map_err(|e| {
-            TerminationReason::InitializationError(format!("Failed to register fetch: {}", e))
+        setup_fetch_shim(&mut context).map_err(|e| {
+            TerminationReason::InitializationError(format!("Failed to register fetch shim: {}", e))
         })?;
 
         setup_event_handling(&mut context).map_err(|e| {
@@ -119,8 +136,12 @@ impl Worker {
 
         Ok(Self {
             context,
+            jobs,
+            budget: match limits.max_wall_clock_time_ms {
+                0 => None,
+                ms => Some(Duration::from_millis(ms)),
+            },
             aborted: Arc::new(AtomicBool::new(false)),
-            ops,
         })
     }
 
@@ -234,319 +255,43 @@ impl Worker {
                 TerminationReason::Exception(format!("Dispatch failed: {}", e))
             })?;
 
-        let _ = self.context.run_jobs();
+        let Some(promise) = result.as_promise() else {
+            return self.extract_response_from_js(&result);
+        };
 
-        // Drain until neither yields work, or an `await fetch(...)` never resolves
-        for _ in 0..MAX_DRAIN_ROUNDS {
-            let fetch_count = self.resolve_pending_fetches().await;
-            let timer_count = self.resolve_pending_timers().await;
+        self.settle(&promise).await?;
 
-            if fetch_count == 0 && timer_count == 0 {
-                break;
-            }
-
-            let _ = self.context.run_jobs();
-        }
-
-        if let Some(promise) = result.as_promise() {
-            match promise.state() {
-                PromiseState::Fulfilled(val) => self.extract_response_from_js(&val),
-                PromiseState::Rejected(err) => Err(TerminationReason::Exception(format!(
-                    "Fetch handler rejected: {}",
-                    err.display()
-                ))),
-                PromiseState::Pending => Err(TerminationReason::Exception(
-                    "Fetch handler did not complete".to_string(),
-                )),
-            }
-        } else {
-            self.extract_response_from_js(&result)
+        match promise.state() {
+            PromiseState::Fulfilled(val) => self.extract_response_from_js(&val),
+            PromiseState::Rejected(err) => Err(TerminationReason::Exception(format!(
+                "Fetch handler rejected: {}",
+                err.display()
+            ))),
+            PromiseState::Pending => Err(TerminationReason::Exception(
+                "Fetch handler did not complete".to_string(),
+            )),
         }
     }
 
-    async fn resolve_pending_fetches(&mut self) -> usize {
-        let pending_arr = match self
-            .context
-            .global_object()
-            .get(js_string!("__pendingFetches"), &mut self.context)
-        {
-            Ok(val) => val,
-            Err(_) => return 0,
+    /// Runs the event loop until `promise` settles, then drops whatever is still
+    /// queued: a stray timer must not keep the request open.
+    async fn settle(&mut self, promise: &JsPromise) -> Result<(), TerminationReason> {
+        let deadline = self.budget.map(|budget| Instant::now() + budget);
+        let jobs = self.jobs.clone();
+        let done = || !matches!(promise.state(), PromiseState::Pending);
+
+        let stop = {
+            let context = RefCell::new(&mut self.context);
+            jobs.run_until(&context, deadline, &done).await
         };
 
-        let arr_obj = match pending_arr.as_object() {
-            Some(obj) => obj.clone(),
-            None => return 0,
-        };
+        jobs.clear();
 
-        let len = arr_obj
-            .get(js_string!("length"), &mut self.context)
-            .ok()
-            .and_then(|v| v.to_u32(&mut self.context).ok())
-            .unwrap_or(0) as usize;
-
-        if len == 0 {
-            return 0;
+        match stop {
+            Ok(Stop::Idle) => Ok(()),
+            Ok(Stop::Timeout) => Err(TerminationReason::WallClockTimeout),
+            Err(e) => Err(TerminationReason::Exception(format!("Job failed: {}", e))),
         }
-
-        let mut entries = Vec::with_capacity(len);
-
-        for i in 0..len {
-            let entry = match arr_obj.get(i as u32, &mut self.context) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            let entry_obj = match entry.as_object() {
-                Some(obj) => obj,
-                None => continue,
-            };
-
-            let url = entry_obj
-                .get(js_string!("url"), &mut self.context)
-                .ok()
-                .and_then(|v| {
-                    v.to_string(&mut self.context)
-                        .ok()
-                        .map(|s| s.to_std_string_escaped())
-                })
-                .unwrap_or_default();
-
-            let method = entry_obj
-                .get(js_string!("method"), &mut self.context)
-                .ok()
-                .and_then(|v| {
-                    v.to_string(&mut self.context)
-                        .ok()
-                        .map(|s| s.to_std_string_escaped())
-                })
-                .unwrap_or_else(|| "GET".to_string());
-
-            let body_val = entry_obj
-                .get(js_string!("body"), &mut self.context)
-                .ok()
-                .and_then(|v| {
-                    if v.is_null_or_undefined() {
-                        None
-                    } else {
-                        v.to_string(&mut self.context)
-                            .ok()
-                            .map(|s| s.to_std_string_escaped())
-                    }
-                });
-
-            let mut headers = std::collections::HashMap::new();
-
-            if let Ok(headers_val) = entry_obj.get(js_string!("headers"), &mut self.context)
-                && let Some(headers_obj) = headers_val.as_object()
-                && let Ok(keys) = headers_obj.own_property_keys(&mut self.context)
-            {
-                for key in keys {
-                    let key_str = key.to_string();
-
-                    if let Ok(val) = headers_obj.get(key, &mut self.context) {
-                        let val_str = val
-                            .to_string(&mut self.context)
-                            .map(|s| s.to_std_string_escaped())
-                            .unwrap_or_default();
-                        headers.insert(key_str, val_str);
-                    }
-                }
-            }
-
-            let resolve: Option<JsFunction> = entry_obj
-                .get(js_string!("resolve"), &mut self.context)
-                .ok()
-                .and_then(|v| {
-                    let obj = v.as_object()?.clone();
-                    JsFunction::from_object(obj)
-                });
-
-            let reject: Option<JsFunction> = entry_obj
-                .get(js_string!("reject"), &mut self.context)
-                .ok()
-                .and_then(|v| {
-                    let obj = v.as_object()?.clone();
-                    JsFunction::from_object(obj)
-                });
-
-            if let (Some(resolve), Some(reject)) = (resolve, reject) {
-                let http_method = match method.as_str() {
-                    "GET" => openworkers_core::HttpMethod::Get,
-                    "POST" => openworkers_core::HttpMethod::Post,
-                    "PUT" => openworkers_core::HttpMethod::Put,
-                    "DELETE" => openworkers_core::HttpMethod::Delete,
-                    "PATCH" => openworkers_core::HttpMethod::Patch,
-                    "HEAD" => openworkers_core::HttpMethod::Head,
-                    "OPTIONS" => openworkers_core::HttpMethod::Options,
-                    _ => openworkers_core::HttpMethod::Get,
-                };
-
-                let body = match body_val {
-                    Some(b) => RequestBody::Bytes(Bytes::from(b)),
-                    None => RequestBody::None,
-                };
-
-                entries.push((
-                    HttpRequest {
-                        url,
-                        method: http_method,
-                        headers,
-                        body,
-                    },
-                    resolve,
-                    reject,
-                ));
-            }
-        }
-
-        let _ = self.context.eval(Source::from_bytes(
-            b"globalThis.__pendingFetches.length = 0;",
-        ));
-
-        let count = entries.len();
-
-        for (request, resolve, reject) in entries {
-            match self.ops.handle_fetch(request).await {
-                Ok(response) => {
-                    let response_code = self.build_response_js(response);
-
-                    match self
-                        .context
-                        .eval(Source::from_bytes(response_code.as_bytes()))
-                    {
-                        Ok(js_response) => {
-                            let _ = resolve.call(
-                                &JsValue::undefined(),
-                                &[js_response],
-                                &mut self.context,
-                            );
-                        }
-                        Err(e) => {
-                            let err_msg = JsValue::from(js_string!(format!(
-                                "Failed to construct response: {}",
-                                e
-                            )));
-                            let _ =
-                                reject.call(&JsValue::undefined(), &[err_msg], &mut self.context);
-                        }
-                    }
-                }
-                Err(e) => {
-                    let err_msg = JsValue::from(js_string!(format!("fetch failed: {}", e)));
-                    let _ = reject.call(&JsValue::undefined(), &[err_msg], &mut self.context);
-                }
-            }
-        }
-
-        count
-    }
-
-    /// Sleeps out each queued delay before firing it; the JS side only records
-    /// timers, it never waits.
-    async fn resolve_pending_timers(&mut self) -> usize {
-        let pending_arr = match self
-            .context
-            .global_object()
-            .get(js_string!("__pendingTimers"), &mut self.context)
-        {
-            Ok(val) => val,
-            Err(_) => return 0,
-        };
-
-        let arr_obj = match pending_arr.as_object() {
-            Some(obj) => obj.clone(),
-            None => return 0,
-        };
-
-        let len = arr_obj
-            .get(js_string!("length"), &mut self.context)
-            .ok()
-            .and_then(|v| v.to_u32(&mut self.context).ok())
-            .unwrap_or(0) as usize;
-
-        if len == 0 {
-            return 0;
-        }
-
-        let mut timers = Vec::with_capacity(len);
-
-        for i in 0..len {
-            let entry = match arr_obj.get(i as u32, &mut self.context) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            let entry_obj = match entry.as_object() {
-                Some(obj) => obj,
-                None => continue,
-            };
-
-            let id = entry_obj
-                .get(js_string!("id"), &mut self.context)
-                .ok()
-                .and_then(|v| v.to_u32(&mut self.context).ok())
-                .unwrap_or(0);
-
-            let delay = entry_obj
-                .get(js_string!("delay"), &mut self.context)
-                .ok()
-                .and_then(|v| v.to_u32(&mut self.context).ok())
-                .unwrap_or(0) as u64;
-
-            timers.push((id, delay));
-        }
-
-        let _ = self.context.eval(Source::from_bytes(
-            b"globalThis.__pendingTimers.length = 0;",
-        ));
-
-        let count = timers.len();
-
-        for (id, delay) in timers {
-            if delay > 0 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
-            }
-
-            let cancelled_check = format!(
-                "globalThis.__cancelledTimers.has({}) ? (globalThis.__cancelledTimers.delete({}), true) : false",
-                id, id
-            );
-
-            let was_cancelled = self
-                .context
-                .eval(Source::from_bytes(cancelled_check.as_bytes()))
-                .map(|v| v.to_boolean())
-                .unwrap_or(false);
-
-            if !was_cancelled {
-                let exec_code = format!("globalThis.__executeTimer({})", id);
-                let _ = self.context.eval(Source::from_bytes(exec_code.as_bytes()));
-                let _ = self.context.run_jobs();
-            }
-        }
-
-        count
-    }
-
-    fn build_response_js(&self, response: HttpResponse) -> String {
-        let body = match &response.body {
-            ResponseBody::Bytes(b) => Some(String::from_utf8_lossy(b).into_owned()),
-            ResponseBody::None | ResponseBody::Stream(_) => None,
-        };
-
-        let headers: std::collections::HashMap<&str, &str> = response
-            .headers
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-
-        format!(
-            "(new Response({}, {{ status: {}, headers: {} }}))",
-            js_literal(&body),
-            response.status,
-            js_literal(&headers)
-        )
     }
 
     fn extract_response_from_js(
@@ -659,106 +404,50 @@ impl Worker {
 
     async fn handle_scheduled(&mut self, time: u64) -> Result<(), TerminationReason> {
         let listeners = EventListeners::from_context(&mut self.context);
-        let scheduled_handlers: Vec<JsFunction> = listeners.borrow().scheduled.clone();
+        let handlers: Vec<JsFunction> = listeners.borrow().scheduled.clone();
 
-        if scheduled_handlers.is_empty() {
+        if handlers.is_empty() {
             return Ok(());
         }
 
-        let setup_code = format!(
-            r#"(function() {{
-                globalThis.__currentScheduledEvent = {{
-                    type: 'scheduled',
-                    scheduledTime: {},
-                    _waitUntilPromises: [],
-                    waitUntil: function(promise) {{
-                        this._waitUntilPromises.push(promise);
-                    }}
-                }};
-                return globalThis.__currentScheduledEvent;
-            }})()"#,
-            time
-        );
-
-        let event_value = self
+        let dispatch = self
             .context
-            .eval(Source::from_bytes(setup_code.as_bytes()))
-            .map_err(|e| {
-                TerminationReason::Exception(format!("Failed to create scheduled event: {}", e))
+            .global_object()
+            .get(js_string!("__dispatchScheduled"), &mut self.context)
+            .ok()
+            .and_then(|v| v.as_object().and_then(JsFunction::from_object))
+            .ok_or_else(|| {
+                TerminationReason::Other("__dispatchScheduled is not callable".to_string())
             })?;
 
-        for handler in scheduled_handlers {
-            let event_val = event_value.clone();
+        let handlers =
+            JsArray::from_iter(handlers.into_iter().map(JsValue::from), &mut self.context);
 
-            let job = PromiseJob::new(move |context| {
-                handler.call(
-                    &JsValue::undefined(),
-                    std::slice::from_ref(&event_val),
-                    context,
-                )
-            });
+        let args = [handlers.into(), JsValue::from(time as f64)];
 
-            self.context.enqueue_job(job.into());
-        }
+        let result = dispatch
+            .call(&JsValue::undefined(), &args, &mut self.context)
+            .map_err(|e| {
+                TerminationReason::Exception(format!("Scheduled dispatch failed: {}", e))
+            })?;
 
-        if let Err(e) = self.context.run_jobs() {
-            return Err(TerminationReason::Exception(format!(
-                "Scheduled handler error: {}",
-                e
-            )));
-        }
+        let Some(promise) = result.as_promise() else {
+            return Ok(());
+        };
 
-        let wait_code = r#"(async function() {
-            var event = globalThis.__currentScheduledEvent;
-            if (event && event._waitUntilPromises.length > 0) {
-                await Promise.all(event._waitUntilPromises);
-            }
-            return true;
-        })()"#;
+        self.settle(&promise).await?;
 
-        let result = self.context.eval(Source::from_bytes(wait_code.as_bytes()));
-
-        match result {
-            Ok(value) => {
-                if let Some(promise) = value.as_promise() {
-                    let _ = self.context.run_jobs();
-
-                    for _ in 0..MAX_DRAIN_ROUNDS {
-                        let timer_count = self.resolve_pending_timers().await;
-
-                        if timer_count == 0 {
-                            break;
-                        }
-
-                        let _ = self.context.run_jobs();
-                    }
-
-                    match promise.state() {
-                        PromiseState::Fulfilled(_) => Ok(()),
-                        PromiseState::Rejected(err) => Err(TerminationReason::Exception(format!(
-                            "Scheduled handler rejected: {}",
-                            err.display()
-                        ))),
-                        PromiseState::Pending => Err(TerminationReason::Exception(
-                            "Promise still pending".to_string(),
-                        )),
-                    }
-                } else {
-                    Ok(())
-                }
-            }
-            Err(e) => Err(TerminationReason::Exception(format!(
-                "Scheduled wait failed: {}",
-                e
+        match promise.state() {
+            PromiseState::Fulfilled(_) => Ok(()),
+            PromiseState::Rejected(err) => Err(TerminationReason::Exception(format!(
+                "Scheduled handler rejected: {}",
+                err.display()
             ))),
+            PromiseState::Pending => Err(TerminationReason::Exception(
+                "Scheduled handler did not complete".to_string(),
+            )),
         }
     }
-}
-
-/// JSON syntax is a subset of JS expression syntax, so a serialized value can
-/// be spliced into generated source without breaking out of its literal.
-fn js_literal<T: serde::Serialize>(value: &T) -> String {
-    serde_json::to_string(value).expect("request and response fields are serializable")
 }
 
 fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
@@ -889,160 +578,6 @@ fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
         "#,
     ))?;
 
-    Ok(())
-}
-
-/// Queues timers for the Rust side to sleep on, except zero-delay ones, which
-/// go straight to a microtask.
-fn setup_timers(context: &mut Context) -> Result<(), boa_engine::JsError> {
-    context.eval(Source::from_bytes(
-        r#"
-        globalThis.__timerId = 0;
-        globalThis.__timerCallbacks = new Map();
-        globalThis.__pendingTimers = [];
-        globalThis.__cancelledTimers = new Set();
-
-        globalThis.__executeTimer = function(id) {
-            var entry = globalThis.__timerCallbacks.get(id);
-
-            if (!entry) return;
-
-            if (entry.type === 'timeout') {
-                globalThis.__timerCallbacks.delete(id);
-            }
-
-            try {
-                entry.callback.apply(undefined, entry.args);
-            } catch (e) {
-                // Timer callback errors should not crash the runtime
-            }
-
-            if (entry.type === 'interval') {
-                globalThis.__pendingTimers.push({
-                    id: id,
-                    delay: entry.delay,
-                    type: 'interval'
-                });
-            }
-        };
-
-        globalThis.setTimeout = function(callback, delay) {
-            var args = [];
-
-            for (var i = 2; i < arguments.length; i++) {
-                args.push(arguments[i]);
-            }
-
-            var id = ++globalThis.__timerId;
-            var ms = Math.max(0, Number(delay) || 0);
-
-            globalThis.__timerCallbacks.set(id, {
-                callback: callback,
-                args: args,
-                type: 'timeout',
-                delay: ms
-            });
-
-            if (ms === 0) {
-                Promise.resolve().then(function() {
-                    if (!globalThis.__cancelledTimers.has(id)) {
-                        globalThis.__executeTimer(id);
-                    } else {
-                        globalThis.__cancelledTimers.delete(id);
-                    }
-                });
-            } else {
-                globalThis.__pendingTimers.push({
-                    id: id,
-                    delay: ms,
-                    type: 'timeout'
-                });
-            }
-
-            return id;
-        };
-
-        globalThis.setInterval = function(callback, interval) {
-            var args = [];
-
-            for (var i = 2; i < arguments.length; i++) {
-                args.push(arguments[i]);
-            }
-
-            var id = ++globalThis.__timerId;
-            var ms = Math.max(0, Number(interval) || 0);
-
-            globalThis.__timerCallbacks.set(id, {
-                callback: callback,
-                args: args,
-                type: 'interval',
-                delay: ms
-            });
-
-            globalThis.__pendingTimers.push({
-                id: id,
-                delay: ms,
-                type: 'interval'
-            });
-
-            return id;
-        };
-
-        globalThis.clearTimeout = function(id) {
-            globalThis.__timerCallbacks.delete(id);
-            globalThis.__cancelledTimers.add(id);
-        };
-
-        globalThis.clearInterval = function(id) {
-            globalThis.__timerCallbacks.delete(id);
-            globalThis.__cancelledTimers.add(id);
-        };
-        "#,
-    ))?;
-    Ok(())
-}
-
-/// fetch() only queues into __pendingFetches; the Rust side is what runs the
-/// request through the operations handler.
-fn setup_fetch_global(context: &mut Context) -> Result<(), boa_engine::JsError> {
-    context.eval(Source::from_bytes(
-        r#"
-        globalThis.__pendingFetches = [];
-
-        globalThis.fetch = function(input, init) {
-            init = init || {};
-
-            var url = typeof input === 'string' ? input : (input && input.url ? input.url : String(input));
-            var method = (init.method || 'GET').toUpperCase();
-            var headers = {};
-
-            if (init.headers) {
-                if (init.headers instanceof Headers) {
-                    init.headers._map.forEach(function(v, k) { headers[k] = v; });
-                } else if (typeof init.headers === 'object') {
-                    var keys = Object.keys(init.headers);
-
-                    for (var i = 0; i < keys.length; i++) {
-                        headers[keys[i].toLowerCase()] = String(init.headers[keys[i]]);
-                    }
-                }
-            }
-
-            var body = init.body !== undefined && init.body !== null ? String(init.body) : null;
-
-            return new Promise(function(resolve, reject) {
-                globalThis.__pendingFetches.push({
-                    url: url,
-                    method: method,
-                    headers: headers,
-                    body: body,
-                    resolve: resolve,
-                    reject: reject
-                });
-            });
-        };
-        "#,
-    ))?;
     Ok(())
 }
 
@@ -1486,6 +1021,81 @@ fn setup_event_handling(context: &mut Context) -> Result<(), boa_engine::JsError
                 return failed(e);
             }
         };
+
+        globalThis.__dispatchScheduled = async function(handlers, scheduledTime) {
+            var event = {
+                type: 'scheduled',
+                scheduledTime: scheduledTime,
+                _waitUntil: [],
+                waitUntil: function(promise) { this._waitUntil.push(promise); }
+            };
+
+            for (var i = 0; i < handlers.length; i++) {
+                await handlers[i](event);
+            }
+
+            await Promise.all(event._waitUntil);
+        };
+        "#,
+    ))?;
+
+    Ok(())
+}
+
+/// Turns the upstream `Response` that `fetch()` resolves with into ours, which
+/// carries a stream body and is what the response extractors read.
+fn setup_fetch_shim(context: &mut Context) -> Result<(), boa_engine::JsError> {
+    context.eval(Source::from_bytes(
+        r#"
+        (function() {
+            var native = globalThis.fetch;
+
+            function plainHeaders(init, request) {
+                var out = {};
+
+                if (request && request.headers) {
+                    request.headers.forEach(function(v, k) { out[k] = v; });
+                }
+
+                if (init instanceof Headers) {
+                    init.forEach(function(v, k) { out[k] = v; });
+                } else if (Array.isArray(init)) {
+                    for (var i = 0; i < init.length; i++) out[init[i][0]] = String(init[i][1]);
+                } else if (init && typeof init === 'object') {
+                    var keys = Object.keys(init);
+                    for (var j = 0; j < keys.length; j++) out[keys[j]] = String(init[keys[j]]);
+                }
+
+                return out;
+            }
+
+            globalThis.fetch = async function(input, init) {
+                init = init || {};
+
+                var request = typeof input === 'string' ? null : input;
+                var options = { headers: plainHeaders(init.headers, request) };
+                var method = init.method || (request && request.method);
+
+                if (method) options.method = String(method);
+
+                if (init.body !== undefined && init.body !== null) {
+                    options.body = String(init.body);
+                }
+
+                var response = await native(request ? String(request.url) : String(input), options);
+                var headers = new Headers();
+
+                for (var entry of response.headers) headers.append(entry[0], entry[1]);
+
+                var bytes = await response.bytes();
+
+                return new Response(bytes.length > 0 ? bytes : null, {
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers: headers
+                });
+            };
+        })();
         "#,
     ))?;
 
