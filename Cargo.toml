@@ -11,9 +11,9 @@ actix = ["dep:actix-web", "openworkers-core/actix"]
 # openworkers-core = { path = "../openworkers-core" }
 openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.14.0", features = ["hyper"] }
 
-# Boa JavaScript engine (pinned to main for ICU 2.1 compat with v8)
-boa_engine = { git = "https://github.com/boa-dev/boa", rev = "07ebe591c721307f110cc4b082f03d7d62f4a352", package = "boa_engine" }
-boa_gc = { git = "https://github.com/boa-dev/boa", rev = "07ebe591c721307f110cc4b082f03d7d62f4a352", package = "boa_gc" }
+# Boa JavaScript engine (main, no release carries the fixes this runtime needs)
+boa_engine = { git = "https://github.com/boa-dev/boa", rev = "93a9e31a83bbaa15bbd8b687e61639ffc53bbef1", package = "boa_engine" }
+boa_gc = { git = "https://github.com/boa-dev/boa", rev = "93a9e31a83bbaa15bbd8b687e61639ffc53bbef1", package = "boa_gc" }
 
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
