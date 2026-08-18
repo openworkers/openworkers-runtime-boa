@@ -12,6 +12,7 @@ use openworkers_core::{
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::ops::OpsLogger;
 use crate::web_api::setup_web_apis;
 
 /// Caps the drain loop, so a script chaining fetches and timers forever cannot
@@ -53,7 +54,7 @@ impl Worker {
         let mut context = Context::default();
 
         boa_runtime::console::Console::register_with_logger(
-            boa_runtime::console::DefaultLogger,
+            OpsLogger::new(ops.clone()),
             &mut context,
         )
         .map_err(|e| {
