@@ -357,20 +357,19 @@ impl Worker {
             // Extract headers as HashMap
             let mut headers = std::collections::HashMap::new();
 
-            if let Ok(headers_val) = entry_obj.get(js_string!("headers"), &mut self.context) {
-                if let Some(headers_obj) = headers_val.as_object() {
-                    if let Ok(keys) = headers_obj.own_property_keys(&mut self.context) {
-                        for key in keys {
-                            let key_str = key.to_string();
+            if let Ok(headers_val) = entry_obj.get(js_string!("headers"), &mut self.context)
+                && let Some(headers_obj) = headers_val.as_object()
+                && let Ok(keys) = headers_obj.own_property_keys(&mut self.context)
+            {
+                for key in keys {
+                    let key_str = key.to_string();
 
-                            if let Ok(val) = headers_obj.get(key, &mut self.context) {
-                                let val_str = val
-                                    .to_string(&mut self.context)
-                                    .map(|s| s.to_std_string_escaped())
-                                    .unwrap_or_default();
-                                headers.insert(key_str, val_str);
-                            }
-                        }
+                    if let Ok(val) = headers_obj.get(key, &mut self.context) {
+                        let val_str = val
+                            .to_string(&mut self.context)
+                            .map(|s| s.to_std_string_escaped())
+                            .unwrap_or_default();
+                        headers.insert(key_str, val_str);
                     }
                 }
             }
@@ -606,59 +605,56 @@ impl Worker {
         // Headers: our Headers class stores data in _map (a JS Map)
         let mut headers = Vec::new();
 
-        if let Ok(headers_val) = resp_obj.get(js_string!("headers"), &mut self.context) {
-            if let Some(headers_obj) = headers_val.as_object() {
-                // Call __extractHeaders helper registered at init
-                if let Ok(extractor) = self
-                    .context
-                    .global_object()
-                    .get(js_string!("__extractHeaders"), &mut self.context)
-                {
-                    if let Some(extractor_fn) = extractor
-                        .as_object()
-                        .and_then(|o| JsFunction::from_object(o.clone()))
-                    {
-                        if let Ok(result) = extractor_fn.call(
-                            &JsValue::undefined(),
-                            &[headers_obj.clone().into()],
-                            &mut self.context,
-                        ) {
-                            // Result is a flat array: [key, value, key, value, ...]
-                            if let Some(arr) = result.as_object() {
-                                let len = arr
-                                    .get(js_string!("length"), &mut self.context)
+        if let Ok(headers_val) = resp_obj.get(js_string!("headers"), &mut self.context)
+            && let Some(headers_obj) = headers_val.as_object()
+        {
+            // Call __extractHeaders helper registered at init
+            if let Ok(extractor) = self
+                .context
+                .global_object()
+                .get(js_string!("__extractHeaders"), &mut self.context)
+                && let Some(extractor_fn) = extractor
+                    .as_object()
+                    .and_then(|o| JsFunction::from_object(o.clone()))
+                && let Ok(result) = extractor_fn.call(
+                    &JsValue::undefined(),
+                    &[headers_obj.clone().into()],
+                    &mut self.context,
+                )
+            {
+                // Result is a flat array: [key, value, key, value, ...]
+                if let Some(arr) = result.as_object() {
+                    let len = arr
+                        .get(js_string!("length"), &mut self.context)
+                        .ok()
+                        .and_then(|v| v.to_u32(&mut self.context).ok())
+                        .unwrap_or(0);
+
+                    let mut i = 0;
+
+                    while i + 1 < len {
+                        let key = arr
+                            .get(i, &mut self.context)
+                            .ok()
+                            .and_then(|v| {
+                                v.to_string(&mut self.context)
                                     .ok()
-                                    .and_then(|v| v.to_u32(&mut self.context).ok())
-                                    .unwrap_or(0);
+                                    .map(|s| s.to_std_string_escaped())
+                            })
+                            .unwrap_or_default();
 
-                                let mut i = 0;
+                        let val = arr
+                            .get(i + 1, &mut self.context)
+                            .ok()
+                            .and_then(|v| {
+                                v.to_string(&mut self.context)
+                                    .ok()
+                                    .map(|s| s.to_std_string_escaped())
+                            })
+                            .unwrap_or_default();
 
-                                while i + 1 < len {
-                                    let key = arr
-                                        .get(i, &mut self.context)
-                                        .ok()
-                                        .and_then(|v| {
-                                            v.to_string(&mut self.context)
-                                                .ok()
-                                                .map(|s| s.to_std_string_escaped())
-                                        })
-                                        .unwrap_or_default();
-
-                                    let val = arr
-                                        .get(i + 1, &mut self.context)
-                                        .ok()
-                                        .and_then(|v| {
-                                            v.to_string(&mut self.context)
-                                                .ok()
-                                                .map(|s| s.to_std_string_escaped())
-                                        })
-                                        .unwrap_or_default();
-
-                                    headers.push((key, val));
-                                    i += 2;
-                                }
-                            }
-                        }
+                        headers.push((key, val));
+                        i += 2;
                     }
                 }
             }
@@ -668,31 +664,25 @@ impl Worker {
         // Call __extractBody helper registered at init
         let mut body = ResponseBody::None;
 
-        if let Ok(body_val) = resp_obj.get(js_string!("body"), &mut self.context) {
-            if body_val.is_object() {
-                if let Ok(extractor) = self
-                    .context
-                    .global_object()
-                    .get(js_string!("__extractBody"), &mut self.context)
-                {
-                    if let Some(extractor_fn) = extractor
-                        .as_object()
-                        .and_then(|o| JsFunction::from_object(o.clone()))
-                    {
-                        if let Ok(result) =
-                            extractor_fn.call(&JsValue::undefined(), &[body_val], &mut self.context)
-                        {
-                            let body_str = result
-                                .to_string(&mut self.context)
-                                .map(|s| s.to_std_string_escaped())
-                                .unwrap_or_default();
+        if let Ok(body_val) = resp_obj.get(js_string!("body"), &mut self.context)
+            && body_val.is_object()
+            && let Ok(extractor) = self
+                .context
+                .global_object()
+                .get(js_string!("__extractBody"), &mut self.context)
+            && let Some(extractor_fn) = extractor
+                .as_object()
+                .and_then(|o| JsFunction::from_object(o.clone()))
+            && let Ok(result) =
+                extractor_fn.call(&JsValue::undefined(), &[body_val], &mut self.context)
+        {
+            let body_str = result
+                .to_string(&mut self.context)
+                .map(|s| s.to_std_string_escaped())
+                .unwrap_or_default();
 
-                            if !body_str.is_empty() {
-                                body = ResponseBody::Bytes(Bytes::from(body_str));
-                            }
-                        }
-                    }
-                }
+            if !body_str.is_empty() {
+                body = ResponseBody::Bytes(Bytes::from(body_str));
             }
         }
 
@@ -742,7 +732,11 @@ impl Worker {
             let event_val = event_value.clone();
 
             let job = PromiseJob::new(move |context| {
-                handler.call(&JsValue::undefined(), &[event_val.clone()], context)
+                handler.call(
+                    &JsValue::undefined(),
+                    std::slice::from_ref(&event_val),
+                    context,
+                )
             });
 
             self.context.enqueue_job(job.into());
@@ -889,45 +883,39 @@ fn args_to_string(args: &[JsValue], ctx: &mut Context) -> String {
 fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
     use ring::{digest, rand};
 
-    let crypto =
-        boa_engine::object::ObjectInitializer::new(context)
-            .function(
-                NativeFunction::from_copy_closure(|_this, _args, _ctx| {
-                    let uuid = uuid::Uuid::new_v4().to_string();
-                    Ok(JsValue::from(boa_engine::JsString::from(uuid)))
-                }),
-                js_string!("randomUUID"),
-                0,
-            )
-            .function(
-                NativeFunction::from_copy_closure(|_this, args, ctx| {
-                    if let Some(array) = args.first().and_then(|v| v.as_object()) {
-                        if let Ok(buffer_val) = array.get(js_string!("buffer"), ctx) {
-                            if let Some(buffer_obj) = buffer_val.as_object() {
-                                if let Ok(ab) =
-                                    boa_engine::object::builtins::JsArrayBuffer::from_object(
-                                        buffer_obj.clone(),
-                                    )
-                                {
-                                    let rng = rand::SystemRandom::new();
-                                    let len = ab.data().map(|d| d.len()).unwrap_or(0);
-                                    let mut bytes = vec![0u8; len];
+    let crypto = boa_engine::object::ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_copy_closure(|_this, _args, _ctx| {
+                let uuid = uuid::Uuid::new_v4().to_string();
+                Ok(JsValue::from(boa_engine::JsString::from(uuid)))
+            }),
+            js_string!("randomUUID"),
+            0,
+        )
+        .function(
+            NativeFunction::from_copy_closure(|_this, args, ctx| {
+                if let Some(array) = args.first().and_then(|v| v.as_object())
+                    && let Ok(buffer_val) = array.get(js_string!("buffer"), ctx)
+                    && let Some(buffer_obj) = buffer_val.as_object()
+                    && let Ok(ab) =
+                        boa_engine::object::builtins::JsArrayBuffer::from_object(buffer_obj.clone())
+                {
+                    let rng = rand::SystemRandom::new();
+                    let len = ab.data().map(|d| d.len()).unwrap_or(0);
+                    let mut bytes = vec![0u8; len];
 
-                                    if rand::SecureRandom::fill(&rng, &mut bytes).is_ok() {
-                                        if let Some(mut data) = ab.data_mut() {
-                                            data.copy_from_slice(&bytes);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if rand::SecureRandom::fill(&rng, &mut bytes).is_ok()
+                        && let Some(mut data) = ab.data_mut()
+                    {
+                        data.copy_from_slice(&bytes);
                     }
-                    Ok(JsValue::undefined())
-                }),
-                js_string!("_getRandomValues"),
-                1,
-            )
-            .build();
+                }
+                Ok(JsValue::undefined())
+            }),
+            js_string!("_getRandomValues"),
+            1,
+        )
+        .build();
 
     // Create crypto.subtle
     let subtle =
