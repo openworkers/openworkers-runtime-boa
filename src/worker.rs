@@ -14,11 +14,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::web_api::setup_web_apis;
 
-/// How many times to drain pending fetches and timers before giving up on a
-/// handler, so that a script chaining them forever cannot block the thread.
+/// Caps the drain loop, so a script chaining fetches and timers forever cannot
+/// hold the thread.
 const MAX_DRAIN_ROUNDS: usize = 100;
 
-/// Event listeners stored on the Rust side (following boa_runtime's pattern)
 #[derive(Default, Trace, Finalize, JsData)]
 struct EventListeners {
     fetch: Vec<JsFunction>,
@@ -45,7 +44,6 @@ pub struct Worker {
 }
 
 impl Worker {
-    /// Create a new worker with an OperationsHandler
     pub async fn new_with_ops(
         script: Script,
         _limits: Option<RuntimeLimits>,
@@ -124,7 +122,7 @@ impl Worker {
         })
     }
 
-    /// Create a new worker with DefaultOps (stubs)
+    /// Create a worker with `DefaultOps`, which rejects every outbound operation.
     pub async fn new(
         script: Script,
         limits: Option<RuntimeLimits>,
@@ -133,12 +131,11 @@ impl Worker {
         Self::new_with_ops(script, limits, ops).await
     }
 
-    /// Abort execution
+    /// Only takes effect between tasks, a running handler is not interrupted.
     pub fn abort(&mut self) {
         self.aborted.store(true, Ordering::SeqCst);
     }
 
-    /// Execute a task
     pub async fn exec(&mut self, mut task: Event) -> Result<(), TerminationReason> {
         if self.aborted.load(Ordering::SeqCst) {
             return Err(TerminationReason::Aborted);
@@ -177,10 +174,8 @@ impl Worker {
         }
     }
 
-    /// Handle a fetch event
-    ///
-    /// The event object and the handler loop live in JS, called through the
-    /// helper registered at init so that nothing is parsed per request.
+    /// Dispatches through the JS helper registered at init, so a request parses
+    /// no source of its own.
     async fn handle_fetch(
         &mut self,
         request: HttpRequest,
@@ -236,8 +231,7 @@ impl Worker {
 
         let _ = self.context.run_jobs();
 
-        // Drain fetches and timers until neither yields work, so that
-        // `await fetch(...)` and `setTimeout(...)` inside handlers resolve
+        // Drain until neither yields work, or an `await fetch(...)` never resolves
         for _ in 0..MAX_DRAIN_ROUNDS {
             let fetch_count = self.resolve_pending_fetches().await;
             let timer_count = self.resolve_pending_timers().await;
@@ -265,10 +259,8 @@ impl Worker {
         }
     }
 
-    /// Drain pending fetch requests from __pendingFetches, execute them via ops,
-    /// and resolve/reject their promises. Returns the number of fetches processed.
+    /// Returns how many fetches were run, so the caller knows whether to loop again.
     async fn resolve_pending_fetches(&mut self) -> usize {
-        // Read __pendingFetches array
         let pending_arr = match self
             .context
             .global_object()
@@ -293,7 +285,6 @@ impl Worker {
             return 0;
         }
 
-        // Collect all pending fetch entries
         let mut entries = Vec::with_capacity(len);
 
         for i in 0..len {
@@ -340,7 +331,6 @@ impl Worker {
                     }
                 });
 
-            // Extract headers as HashMap
             let mut headers = std::collections::HashMap::new();
 
             if let Ok(headers_val) = entry_obj.get(js_string!("headers"), &mut self.context)
@@ -406,18 +396,15 @@ impl Worker {
             }
         }
 
-        // Clear the array
         let _ = self.context.eval(Source::from_bytes(
             b"globalThis.__pendingFetches.length = 0;",
         ));
 
         let count = entries.len();
 
-        // Execute each fetch via ops and resolve/reject
         for (request, resolve, reject) in entries {
             match self.ops.handle_fetch(request).await {
                 Ok(response) => {
-                    // Build a JS Response object from the HttpResponse
                     let response_code = self.build_response_js(response);
 
                     match self
@@ -451,10 +438,9 @@ impl Worker {
         count
     }
 
-    /// Drain pending timers from __pendingTimers, sleep for their delay,
-    /// then call __executeTimer(id) for each. Returns the number processed.
+    /// Sleeps out each queued delay before firing it; the JS side only records
+    /// timers, it never waits.
     async fn resolve_pending_timers(&mut self) -> usize {
-        // Read __pendingTimers array
         let pending_arr = match self
             .context
             .global_object()
@@ -479,7 +465,6 @@ impl Worker {
             return 0;
         }
 
-        // Collect timer entries
         let mut timers = Vec::with_capacity(len);
 
         for i in 0..len {
@@ -508,20 +493,17 @@ impl Worker {
             timers.push((id, delay));
         }
 
-        // Clear the array
         let _ = self.context.eval(Source::from_bytes(
             b"globalThis.__pendingTimers.length = 0;",
         ));
 
         let count = timers.len();
 
-        // Execute each timer: sleep for delay, then call __executeTimer(id)
         for (id, delay) in timers {
             if delay > 0 {
                 tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
             }
 
-            // Check if timer was cancelled during the sleep
             let cancelled_check = format!(
                 "globalThis.__cancelledTimers.has({}) ? (globalThis.__cancelledTimers.delete({}), true) : false",
                 id, id
@@ -543,7 +525,6 @@ impl Worker {
         count
     }
 
-    /// Build JS code to create a Response object from an HttpResponse
     fn build_response_js(&self, response: HttpResponse) -> String {
         let body = match &response.body {
             ResponseBody::Bytes(b) => Some(String::from_utf8_lossy(b).into_owned()),
@@ -564,7 +545,6 @@ impl Worker {
         )
     }
 
-    /// Extract HttpResponse from a JS Response object built by web_api.rs
     fn extract_response_from_js(
         &mut self,
         value: &JsValue,
@@ -572,7 +552,7 @@ impl Worker {
         let resp_obj = match value.as_object() {
             Some(obj) => obj,
             None => {
-                // No response set (respondWith not called)
+                // Not an object means respondWith was never called
                 return Ok(HttpResponse {
                     status: 200,
                     headers: Vec::new(),
@@ -581,73 +561,67 @@ impl Worker {
             }
         };
 
-        // Status
         let status = resp_obj
             .get(js_string!("status"), &mut self.context)
             .ok()
             .and_then(|v| v.to_u32(&mut self.context).ok())
             .unwrap_or(200) as u16;
 
-        // Headers: our Headers class stores data in _map (a JS Map)
+        // Headers live in a JS Map, which is why they come back through a JS helper
         let mut headers = Vec::new();
 
+        // The helper returns a flat [key, value, key, value, ...]
         if let Ok(headers_val) = resp_obj.get(js_string!("headers"), &mut self.context)
             && let Some(headers_obj) = headers_val.as_object()
-        {
-            // Call __extractHeaders helper registered at init
-            if let Ok(extractor) = self
+            && let Ok(extractor) = self
                 .context
                 .global_object()
                 .get(js_string!("__extractHeaders"), &mut self.context)
-                && let Some(extractor_fn) = extractor
-                    .as_object()
-                    .and_then(|o| JsFunction::from_object(o.clone()))
-                && let Ok(result) = extractor_fn.call(
-                    &JsValue::undefined(),
-                    &[headers_obj.clone().into()],
-                    &mut self.context,
-                )
-            {
-                // Result is a flat array: [key, value, key, value, ...]
-                if let Some(arr) = result.as_object() {
-                    let len = arr
-                        .get(js_string!("length"), &mut self.context)
-                        .ok()
-                        .and_then(|v| v.to_u32(&mut self.context).ok())
-                        .unwrap_or(0);
+            && let Some(extractor_fn) = extractor
+                .as_object()
+                .and_then(|o| JsFunction::from_object(o.clone()))
+            && let Ok(result) = extractor_fn.call(
+                &JsValue::undefined(),
+                &[headers_obj.clone().into()],
+                &mut self.context,
+            )
+            && let Some(arr) = result.as_object()
+        {
+            let len = arr
+                .get(js_string!("length"), &mut self.context)
+                .ok()
+                .and_then(|v| v.to_u32(&mut self.context).ok())
+                .unwrap_or(0);
 
-                    let mut i = 0;
+            let mut i = 0;
 
-                    while i + 1 < len {
-                        let key = arr
-                            .get(i, &mut self.context)
+            while i + 1 < len {
+                let key = arr
+                    .get(i, &mut self.context)
+                    .ok()
+                    .and_then(|v| {
+                        v.to_string(&mut self.context)
                             .ok()
-                            .and_then(|v| {
-                                v.to_string(&mut self.context)
-                                    .ok()
-                                    .map(|s| s.to_std_string_escaped())
-                            })
-                            .unwrap_or_default();
+                            .map(|s| s.to_std_string_escaped())
+                    })
+                    .unwrap_or_default();
 
-                        let val = arr
-                            .get(i + 1, &mut self.context)
+                let val = arr
+                    .get(i + 1, &mut self.context)
+                    .ok()
+                    .and_then(|v| {
+                        v.to_string(&mut self.context)
                             .ok()
-                            .and_then(|v| {
-                                v.to_string(&mut self.context)
-                                    .ok()
-                                    .map(|s| s.to_std_string_escaped())
-                            })
-                            .unwrap_or_default();
+                            .map(|s| s.to_std_string_escaped())
+                    })
+                    .unwrap_or_default();
 
-                        headers.push((key, val));
-                        i += 2;
-                    }
-                }
+                headers.push((key, val));
+                i += 2;
             }
         }
 
-        // Body: our Response stores body as a ReadableStream with an internal _queue
-        // Call __extractBody helper registered at init
+        // The body is a ReadableStream, so it is drained by a JS helper too
         let mut body = ResponseBody::None;
 
         if let Ok(body_val) = resp_obj.get(js_string!("body"), &mut self.context)
@@ -679,18 +653,14 @@ impl Worker {
         })
     }
 
-    /// Handle a scheduled event
     async fn handle_scheduled(&mut self, time: u64) -> Result<(), TerminationReason> {
-        // Get the scheduled event listeners from Rust storage
         let listeners = EventListeners::from_context(&mut self.context);
         let scheduled_handlers: Vec<JsFunction> = listeners.borrow().scheduled.clone();
 
         if scheduled_handlers.is_empty() {
-            // No scheduled handlers, just return success
             return Ok(());
         }
 
-        // Create the scheduled event object
         let setup_code = format!(
             r#"(function() {{
                 globalThis.__currentScheduledEvent = {{
@@ -713,7 +683,6 @@ impl Worker {
                 TerminationReason::Exception(format!("Failed to create scheduled event: {}", e))
             })?;
 
-        // Enqueue handlers as jobs
         for handler in scheduled_handlers {
             let event_val = event_value.clone();
 
@@ -728,7 +697,6 @@ impl Worker {
             self.context.enqueue_job(job.into());
         }
 
-        // Run the jobs
         if let Err(e) = self.context.run_jobs() {
             return Err(TerminationReason::Exception(format!(
                 "Scheduled handler error: {}",
@@ -736,7 +704,6 @@ impl Worker {
             )));
         }
 
-        // Wait for waitUntil promises
         let wait_code = r#"(async function() {
             var event = globalThis.__currentScheduledEvent;
             if (event && event._waitUntilPromises.length > 0) {
@@ -752,7 +719,6 @@ impl Worker {
                 if let Some(promise) = value.as_promise() {
                     let _ = self.context.run_jobs();
 
-                    // Drain pending timers (setTimeout inside handlers)
                     for _ in 0..MAX_DRAIN_ROUNDS {
                         let timer_count = self.resolve_pending_timers().await;
 
@@ -785,19 +751,12 @@ impl Worker {
     }
 }
 
-// ============================================================================
-// Setup functions
-// ============================================================================
-
-/// Render a value as a JS literal to be spliced into generated source.
-///
-/// JSON syntax is a subset of JS expression syntax, so this escapes quotes,
-/// backslashes and newlines that would otherwise break out of the literal.
+/// JSON syntax is a subset of JS expression syntax, so a serialized value can
+/// be spliced into generated source without breaking out of its literal.
 fn js_literal<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).expect("request and response fields are serializable")
 }
 
-/// Setup crypto global
 fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
     use ring::{digest, rand};
 
@@ -835,7 +794,6 @@ fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
         )
         .build();
 
-    // Create crypto.subtle
     let subtle =
         boa_engine::object::ObjectInitializer::new(context)
             .function(
@@ -897,7 +855,6 @@ fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
     crypto.set(js_string!("subtle"), subtle, false, context)?;
     context.register_global_property(js_string!("crypto"), crypto, Attribute::all())?;
 
-    // JS wrappers
     context.eval(Source::from_bytes(
         r#"
         (function() {
@@ -942,12 +899,8 @@ fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
     Ok(())
 }
 
-/// Setup timers (setTimeout, setInterval, clearTimeout, clearInterval)
-///
-/// Timers are stored in __pendingTimers as {id, delay, resolve} objects.
-/// The Rust side drains them with actual tokio::time::sleep delays, then
-/// calls the JS __executeTimer(id) to fire callbacks.
-/// Zero-delay timers fire immediately via Promise.resolve() (microtask).
+/// Queues timers for the Rust side to sleep on, except zero-delay ones, which
+/// go straight to a microtask.
 fn setup_timers(context: &mut Context) -> Result<(), boa_engine::JsError> {
     context.eval(Source::from_bytes(
         r#"
@@ -1056,10 +1009,8 @@ fn setup_timers(context: &mut Context) -> Result<(), boa_engine::JsError> {
     Ok(())
 }
 
-/// Setup fetch() global function
-///
-/// Creates a JS-side fetch() that stores pending requests in __pendingFetches.
-/// The Rust side drains these and resolves them via OperationsHandler::handle_fetch.
+/// fetch() only queues into __pendingFetches; the Rust side is what runs the
+/// request through the operations handler.
 fn setup_fetch_global(context: &mut Context) -> Result<(), boa_engine::JsError> {
     context.eval(Source::from_bytes(
         r#"
@@ -1102,12 +1053,8 @@ fn setup_fetch_global(context: &mut Context) -> Result<(), boa_engine::JsError> 
     Ok(())
 }
 
-/// Setup ReadableStream (WHATWG Streams spec, adapted from V8 runtime polyfill)
-///
-/// Three classes: ReadableStream, ReadableStreamDefaultController, ReadableStreamDefaultReader
-/// Uses var/function() syntax to work around Boa 0.21 const/let + shorthand method bug.
+/// The subset of WHATWG streams that Request and Response bodies need.
 fn setup_readable_stream(context: &mut Context) -> Result<(), boa_engine::JsError> {
-    // ReadableStreamDefaultController owns the queue and enqueue/close/error
     context.eval(Source::from_bytes(
         r#"
         globalThis.ReadableStreamDefaultController = class ReadableStreamDefaultController {
@@ -1174,7 +1121,6 @@ fn setup_readable_stream(context: &mut Context) -> Result<(), boa_engine::JsErro
         "#,
     ))?;
 
-    // ReadableStreamDefaultReader provides read(), releaseLock(), cancel(), closed
     context.eval(Source::from_bytes(
         r#"
         globalThis.ReadableStreamDefaultReader = class ReadableStreamDefaultReader {
@@ -1319,7 +1265,6 @@ fn setup_readable_stream(context: &mut Context) -> Result<(), boa_engine::JsErro
         "#,
     ))?;
 
-    // ReadableStream itself
     context.eval(Source::from_bytes(
         r#"
         globalThis.ReadableStream = class ReadableStream {
@@ -1544,12 +1489,9 @@ fn setup_event_handling(context: &mut Context) -> Result<(), boa_engine::JsError
     Ok(())
 }
 
-/// Setup response extraction helpers (registered once at init, called per-request)
-///
 /// Map iteration and ReadableStream queue reading are awkward through Boa's Rust
 /// API alone, so they are done in JS.
 fn setup_response_extractors(context: &mut Context) -> Result<(), boa_engine::JsError> {
-    // Extract headers from a Headers instance into a flat [key, val, key, val] array
     context.eval(Source::from_bytes(
         r#"
         globalThis.__extractHeaders = function(headers) {
@@ -1565,7 +1507,6 @@ fn setup_response_extractors(context: &mut Context) -> Result<(), boa_engine::Js
         "#,
     ))?;
 
-    // Extract body text from a ReadableStream's internal _queue
     context.eval(Source::from_bytes(
         r#"
         globalThis.__extractBody = function(stream) {
@@ -1594,10 +1535,6 @@ fn setup_response_extractors(context: &mut Context) -> Result<(), boa_engine::Js
 
     Ok(())
 }
-
-// ============================================================================
-// Trait implementations
-// ============================================================================
 
 impl openworkers_core::Worker for Worker {
     async fn new(script: Script, limits: Option<RuntimeLimits>) -> Result<Self, TerminationReason> {

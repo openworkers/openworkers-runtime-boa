@@ -1,11 +1,8 @@
-//! Web API implementations in JavaScript
-//!
-//! These are pure JavaScript implementations of standard Web APIs,
-//! evaluated at runtime initialization.
+//! Web APIs: upstream's where `boa_runtime` has them, JavaScript evaluated at
+//! init where it does not.
 
 use boa_engine::Context;
 
-/// Setup all Web APIs
 pub fn setup_web_apis(context: &mut Context) -> Result<(), boa_engine::JsError> {
     boa_runtime::base64::register(None, context)?;
     boa_runtime::clone::register(None, context)?;
@@ -47,11 +44,9 @@ fn setup_dom_exception(context: &mut Context) -> Result<(), boa_engine::JsError>
     Ok(())
 }
 
-/// Setup URL and URLSearchParams
-///
-/// URL parsing is upstream's, backed by the `url` crate. Upstream has no
-/// URLSearchParams, so it is layered on top and the URL stays the source of
-/// truth: reads re-parse `search`, writes assign it back.
+/// `boa_runtime` parses URLs but leaves `searchParams` unimplemented, so
+/// URLSearchParams is layered on top with the URL as the source of truth: reads
+/// re-parse `search`, writes assign it back.
 fn setup_url(context: &mut Context) -> Result<(), boa_engine::JsError> {
     boa_runtime::url::Url::register(None, context)?;
 

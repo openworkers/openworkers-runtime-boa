@@ -28,8 +28,7 @@ addEventListener('fetch', function(event) {
 "#;
 
 /// Measures dispatch alone. Run in both a tiny and the 354 KB context, it says
-/// whether per-request cost tracks script size: the dispatch snippet is
-/// regenerated and re-parsed on every request, but it does not grow with it.
+/// whether per-request cost tracks the size of the script already loaded.
 const TRIVIAL: &str = r#"
 addEventListener('fetch', function(event) {
     event.respondWith(new Response('<html></html>'));
