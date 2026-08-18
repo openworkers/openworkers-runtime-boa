@@ -18,9 +18,10 @@ use crate::web_api::setup_web_apis;
 /// hold the thread.
 const MAX_DRAIN_ROUNDS: usize = 100;
 
+/// Fetch handlers are kept in a JS array instead, because the dispatch loop
+/// that reads them is itself JS.
 #[derive(Default, Trace, Finalize, JsData)]
 struct EventListeners {
-    fetch: Vec<JsFunction>,
     scheduled: Vec<JsFunction>,
 }
 
@@ -1402,62 +1403,65 @@ fn setup_readable_stream(context: &mut Context) -> Result<(), boa_engine::JsErro
     Ok(())
 }
 
-/// Setup event handling
-///
-/// Stores handlers in both Rust-side (EventListeners via context data) and JS-side arrays.
-/// Rust-side storage is used by handle_scheduled (where PromiseJob dispatch works fine).
-/// JS-side storage is used by handle_fetch (Boa 0.21 panics when calling stored functions
-/// from Rust that instantiate Response/ReadableStream due to nested environment issues).
+/// The handler of an `addEventListener('scheduled', ...)` call, `None` for any
+/// other event type.
+fn scheduled_handler_arg(args: &[JsValue], ctx: &mut Context) -> Option<JsFunction> {
+    if args.first()?.to_string(ctx).ok()? != js_string!("scheduled") {
+        return None;
+    }
+
+    JsFunction::from_object(args.get(1)?.as_object()?.clone())
+}
+
 fn setup_event_handling(context: &mut Context) -> Result<(), boa_engine::JsError> {
     use boa_engine::NativeFunction;
 
-    // Initialize the Rust-side event listeners storage
     let _ = EventListeners::from_context(context);
 
-    // Native addEventListener that stores in Rust-side EventListeners
     let add_listener = NativeFunction::from_copy_closure(|_this, args, ctx| {
-        let event_type = args
-            .first()
-            .and_then(|v| v.to_string(ctx).ok())
-            .map(|s| s.to_std_string_escaped())
-            .unwrap_or_default();
+        if let Some(handler) = scheduled_handler_arg(args, ctx) {
+            EventListeners::from_context(ctx)
+                .borrow_mut()
+                .scheduled
+                .push(handler);
+        }
 
-        let handler = args
-            .get(1)
-            .and_then(|v| v.as_object())
-            .and_then(|obj| JsFunction::from_object(obj.clone()));
+        Ok(JsValue::undefined())
+    });
 
-        if let Some(handler) = handler {
-            let listeners = EventListeners::from_context(ctx);
-            let mut listeners = listeners.borrow_mut();
-
-            match event_type.as_str() {
-                "fetch" => listeners.fetch.push(handler),
-                "scheduled" => listeners.scheduled.push(handler),
-                _ => {}
-            }
+    let remove_listener = NativeFunction::from_copy_closure(|_this, args, ctx| {
+        if let Some(handler) = scheduled_handler_arg(args, ctx) {
+            EventListeners::from_context(ctx)
+                .borrow_mut()
+                .scheduled
+                .retain(|listener| !JsObject::equals(listener, &handler));
         }
 
         Ok(JsValue::undefined())
     });
 
     context.register_global_callable(js_string!("__nativeAddEventListener"), 2, add_listener)?;
+    context.register_global_callable(
+        js_string!("__nativeRemoveEventListener"),
+        2,
+        remove_listener,
+    )?;
 
-    // JS-side arrays + wrapper that stores in both Rust and JS
     context.eval(Source::from_bytes(
         r#"
         globalThis.__fetchHandlers = [];
-        globalThis.__scheduledHandlers = [];
 
         globalThis.addEventListener = function(type, handler) {
             __nativeAddEventListener(type, handler);
             if (type === 'fetch') __fetchHandlers.push(handler);
-            else if (type === 'scheduled') __scheduledHandlers.push(handler);
         };
 
-        globalThis.removeEventListener = function(type) {
-            if (type === 'fetch') __fetchHandlers = [];
-            else if (type === 'scheduled') __scheduledHandlers = [];
+        globalThis.removeEventListener = function(type, handler) {
+            __nativeRemoveEventListener(type, handler);
+
+            if (type === 'fetch') {
+                __fetchHandlers = __fetchHandlers.filter(function(h) { return h !== handler; });
+            }
         };
 
         globalThis.__dispatchFetch = async function(url, method, headers, body) {

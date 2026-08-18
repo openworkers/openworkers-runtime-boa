@@ -70,3 +70,39 @@ async fn test_scheduled_async_handler() {
     let task_result = rx.await.unwrap();
     assert!(task_result.success);
 }
+
+#[tokio::test]
+async fn test_removed_scheduled_handler_does_not_run() {
+    let code = r#"
+        globalThis.ran = 0;
+        const handler = () => { globalThis.ran += 1; };
+
+        addEventListener("scheduled", handler);
+        addEventListener("scheduled", () => { globalThis.ran += 10; });
+        removeEventListener("scheduled", handler);
+
+        addEventListener("fetch", (event) => {
+            event.respondWith(new Response(String(globalThis.ran)));
+        });
+    "#;
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let (event, rx) = Event::from_schedule("test-task-4".to_string(), 1234567890);
+    worker.exec(event).await.unwrap();
+    assert!(rx.await.unwrap().success);
+
+    let req = openworkers_core::HttpRequest {
+        method: openworkers_core::HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: std::collections::HashMap::new(),
+        body: openworkers_core::RequestBody::None,
+    };
+
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
+
+    let body = rx.await.unwrap().body.collect().await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&body), "10");
+}
