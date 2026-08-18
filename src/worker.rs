@@ -178,16 +178,19 @@ impl Worker {
         &mut self,
         request: HttpRequest,
     ) -> Result<HttpResponse, TerminationReason> {
-        let headers_json =
-            serde_json::to_string(&request.headers).unwrap_or_else(|_| "{}".to_string());
-
-        let body_str = match &request.body {
-            RequestBody::Bytes(b) => String::from_utf8_lossy(b).to_string(),
-            RequestBody::None => String::new(),
-            RequestBody::Stream(_) => String::new(),
+        let body = match &request.body {
+            RequestBody::Bytes(b) if !b.is_empty() => Some(String::from_utf8_lossy(b).into_owned()),
+            RequestBody::Bytes(_) | RequestBody::None | RequestBody::Stream(_) => None,
         };
 
-        // Create event, dispatch handlers, extract response — all in JS.
+        let init = js_literal(&serde_json::json!({
+            "url": request.url,
+            "method": request.method.to_string(),
+            "headers": request.headers,
+            "body": body,
+        }));
+
+        // Create event, dispatch handlers, extract response, all in JS.
         // Uses async IIFE to properly handle: async handlers, Promise-based respondWith,
         // and error handling. Returns a Promise that resolves to the Response object.
         let dispatch_code = format!(
@@ -195,13 +198,12 @@ impl Worker {
                 var handlers = globalThis.__fetchHandlers || [];
                 if (handlers.length === 0) throw new Error('__no_handlers__');
 
-                var headers = {{}};
-                try {{ headers = JSON.parse('{}'); }} catch(e) {{}}
+                var init = {};
 
-                var request = new Request('{}', {{
-                    method: '{}',
-                    headers: headers,
-                    body: {}
+                var request = new Request(init.url, {{
+                    method: init.method,
+                    headers: init.headers,
+                    body: init.body
                 }});
 
                 var event = {{
@@ -230,14 +232,7 @@ impl Worker {
 
                 return response;
             }})()"#,
-            headers_json.replace('\\', "\\\\").replace('\'', "\\'"),
-            request.url.replace('\'', "\\'"),
-            request.method,
-            if body_str.is_empty() {
-                "null".to_string()
-            } else {
-                format!("'{}'", body_str.replace('\\', "\\\\").replace('\'', "\\'"))
-            }
+            init
         );
 
         let result = self
@@ -567,31 +562,22 @@ impl Worker {
 
     /// Build JS code to create a Response object from an HttpResponse
     fn build_response_js(&self, response: HttpResponse) -> String {
-        let body_str = match &response.body {
-            ResponseBody::Bytes(b) => {
-                let s = String::from_utf8_lossy(b);
-                format!(
-                    "'{}'",
-                    s.replace('\\', "\\\\")
-                        .replace('\'', "\\'")
-                        .replace('\n', "\\n")
-                        .replace('\r', "\\r")
-                )
-            }
-            ResponseBody::None => "null".to_string(),
-            ResponseBody::Stream(_) => "null".to_string(),
+        let body = match &response.body {
+            ResponseBody::Bytes(b) => Some(String::from_utf8_lossy(b).into_owned()),
+            ResponseBody::None | ResponseBody::Stream(_) => None,
         };
 
-        let headers_obj: String = response
+        let headers: std::collections::HashMap<&str, &str> = response
             .headers
             .iter()
-            .map(|(k, v)| format!("'{}': '{}'", k.replace('\'', "\\'"), v.replace('\'', "\\'")))
-            .collect::<Vec<_>>()
-            .join(", ");
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
 
         format!(
-            "(new Response({}, {{ status: {}, headers: {{{}}} }}))",
-            body_str, response.status, headers_obj
+            "(new Response({}, {{ status: {}, headers: {} }}))",
+            js_literal(&body),
+            response.status,
+            js_literal(&headers)
         )
     }
 
@@ -882,6 +868,14 @@ fn setup_console_with_ops(
 
     context.register_global_property(js_string!("console"), console, Attribute::all())?;
     Ok(())
+}
+
+/// Render a value as a JS literal to be spliced into generated source.
+///
+/// JSON syntax is a subset of JS expression syntax, so this escapes quotes,
+/// backslashes and newlines that would otherwise break out of the literal.
+fn js_literal<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value).expect("request and response fields are serializable")
 }
 
 fn args_to_string(args: &[JsValue], ctx: &mut Context) -> String {

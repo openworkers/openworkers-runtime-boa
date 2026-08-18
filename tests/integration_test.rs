@@ -387,3 +387,69 @@ addEventListener("fetch", async (event) => {
     let body = String::from_utf8_lossy(&body_bytes);
     assert_eq!(body, "Empty: true");
 }
+
+#[tokio::test]
+async fn test_request_body_with_quotes_and_newlines() {
+    let code = r#"
+        addEventListener('fetch', async (event) => {
+            const body = await event.request.text();
+            event.respondWith(new Response(body));
+        });
+    "#;
+
+    let payload = "line1\nline2\r\n'single' \"double\" back\\slash";
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let req = HttpRequest {
+        method: HttpMethod::Post,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::Bytes(Bytes::from(payload)),
+    };
+
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
+
+    let response = rx.await.unwrap();
+    let body_bytes = response.body.collect().await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&body_bytes), payload);
+}
+
+#[tokio::test]
+async fn test_request_url_and_headers_with_quotes() {
+    let code = r#"
+        addEventListener('fetch', (event) => {
+            event.respondWith(new Response(
+                event.request.url + '|' + event.request.headers.get('x-note')
+            ));
+        });
+    "#;
+
+    let url = "http://localhost/it's?q=a'b";
+    let note = "he said \"hi\"";
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let mut headers = HashMap::new();
+    headers.insert("x-note".to_string(), note.to_string());
+
+    let req = HttpRequest {
+        method: HttpMethod::Get,
+        url: url.to_string(),
+        headers,
+        body: RequestBody::None,
+    };
+
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
+
+    let response = rx.await.unwrap();
+    let body_bytes = response.body.collect().await.unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&body_bytes),
+        format!("{}|{}", url, note)
+    );
+}

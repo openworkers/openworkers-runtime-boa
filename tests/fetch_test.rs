@@ -36,6 +36,12 @@ impl OperationsHandler for MockOps {
                         r#"{"headers":{"x-custom-header":"test-value"}}"#,
                     )),
                 })
+            } else if request.url.contains("/tricky") {
+                Ok(HttpResponse {
+                    status: 200,
+                    headers: vec![("x-note".to_string(), "it's \"quoted\"".to_string())],
+                    body: ResponseBody::Bytes(Bytes::from("line1\nline2 'q' \"d\" back\\slash")),
+                })
             } else if request.url.contains("/status/404") {
                 Ok(HttpResponse {
                     status: 404,
@@ -199,4 +205,36 @@ async fn test_fetch_404() {
     let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
     assert_eq!(json["status"], 404);
     assert_eq!(json["ok"], false);
+}
+
+#[tokio::test]
+async fn test_fetch_response_with_quotes_and_newlines() {
+    let script = r#"
+        addEventListener('fetch', async (event) => {
+            const response = await fetch('https://example.com/tricky');
+            const text = await response.text();
+            event.respondWith(new Response(JSON.stringify({
+                text: text,
+                note: response.headers.get('x-note')
+            })));
+        });
+    "#;
+
+    let mut worker = create_worker(script).await;
+
+    let request = HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    };
+
+    let (task, rx) = Event::fetch(request);
+    worker.exec(task).await.expect("Task should execute");
+
+    let response = rx.await.expect("Should receive response");
+    let body = response.body.collect().await.expect("Should have body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
+    assert_eq!(json["text"], "line1\nline2 'q' \"d\" back\\slash");
+    assert_eq!(json["note"], "it's \"quoted\"");
 }
