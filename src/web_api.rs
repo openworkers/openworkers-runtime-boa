@@ -315,6 +315,23 @@ fn setup_form_data(context: &mut Context) -> Result<(), boa_engine::JsError> {
                 this._entries = [];
             }
 
+            static _parse(contentType, text) {
+                const type = String(contentType || '');
+
+                // A multipart body would arrive as lossy UTF-8, corrupting any upload
+                if (!type.startsWith('application/x-www-form-urlencoded')) {
+                    throw new TypeError('formData() reads application/x-www-form-urlencoded only, got ' + (type || 'no content-type'));
+                }
+
+                const form = new FormData();
+
+                for (const [name, value] of new URLSearchParams(text)) {
+                    form.append(name, value);
+                }
+
+                return form;
+            }
+
             append(name, value, filename) {
                 if (value instanceof Blob && filename === undefined && value instanceof File) {
                     filename = value.name;
@@ -588,6 +605,10 @@ fn setup_request(context: &mut Context) -> Result<(), boa_engine::JsError> {
                 return JSON.parse(text);
             }
 
+            async formData() {
+                return FormData._parse(this.headers.get('content-type'), await this.text());
+            }
+
             async arrayBuffer() {
                 if (this.bodyUsed) {
                     throw new TypeError('Body has already been consumed');
@@ -756,6 +777,10 @@ fn setup_response(context: &mut Context) -> Result<(), boa_engine::JsError> {
             async json() {
                 const text = await this.text();
                 return JSON.parse(text);
+            }
+
+            async formData() {
+                return FormData._parse(this.headers.get('content-type'), await this.text());
             }
 
             clone() {

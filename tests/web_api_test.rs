@@ -116,3 +116,32 @@ async fn test_headers_get_set_cookie_lists_every_cookie() {
 
     assert_eq!(out, "[\"a=1\",\"b=2\"]|[\"c=3\"]");
 }
+
+#[tokio::test]
+async fn test_request_form_data_decodes_urlencoded() {
+    let out = eval(
+        "const r = new Request('http://x/', {
+             method: 'POST',
+             headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+             body: 'name=Jo+Ann&tag=a&tag=b&sign=%26'
+         });
+         const form = await r.formData();
+         return [form.get('name'), form.getAll('tag').join(','), form.get('sign')].join('|');",
+    )
+    .await;
+
+    assert_eq!(out, "Jo Ann|a,b|&");
+}
+
+#[tokio::test]
+async fn test_form_data_refuses_multipart() {
+    let out = eval(
+        "const r = new Response('x', {
+             headers: { 'content-type': 'multipart/form-data; boundary=abc' }
+         });
+         return await r.formData();",
+    )
+    .await;
+
+    assert!(out.starts_with("threw TypeError"), "{}", out);
+}
