@@ -113,3 +113,21 @@ async fn test_search_params_set_replaces_duplicates() {
 
     assert_eq!(out, "a=9");
 }
+
+/// SvelteKit tracks what a load reads by shadowing `search` with its own getter.
+#[tokio::test]
+async fn test_search_params_ignore_a_shadowed_search() {
+    let out = eval(
+        "const u = new URL('https://example.com/?a=1');
+         let reads = 0;
+         Object.defineProperty(u, 'search', {
+             configurable: true,
+             get() { reads += 1; return '?shadowed=1'; }
+         });
+         const value = u.searchParams.get('a');
+         return [value, reads].join('|');",
+    )
+    .await;
+
+    assert_eq!(out, "1|0");
+}

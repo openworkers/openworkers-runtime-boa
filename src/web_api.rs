@@ -104,9 +104,16 @@ fn setup_url(context: &mut Context) -> Result<(), boa_engine::JsError> {
                     .replace(/%20/g, '+');
             }
 
+            // An instance can shadow `search`, the prototype accessor cannot
+            static _search = Object.getOwnPropertyDescriptor(URL.prototype, 'search');
+
+            static _read(url) {
+                return URLSearchParams._search.get.call(url);
+            }
+
             _all() {
-                if (this._url && this._url.search !== this._lastSearch) {
-                    this._lastSearch = this._url.search;
+                if (this._url && URLSearchParams._read(this._url) !== this._lastSearch) {
+                    this._lastSearch = URLSearchParams._read(this._url);
                     this._entries = URLSearchParams._parse(this._lastSearch);
                 }
 
@@ -124,7 +131,7 @@ fn setup_url(context: &mut Context) -> Result<(), boa_engine::JsError> {
 
                 const query = this._serialize();
                 this._lastSearch = query ? '?' + query : '';
-                this._url.search = this._lastSearch;
+                URLSearchParams._search.set.call(this._url, this._lastSearch);
             }
 
             append(name, value) {
@@ -212,9 +219,9 @@ fn setup_url(context: &mut Context) -> Result<(), boa_engine::JsError> {
                     let params = bound.get(this);
 
                     if (!params) {
-                        params = new URLSearchParams(this.search);
+                        params = new URLSearchParams(URLSearchParams._read(this));
                         params._url = this;
-                        params._lastSearch = this.search;
+                        params._lastSearch = URLSearchParams._read(this);
                         bound.set(this, params);
                     }
 
