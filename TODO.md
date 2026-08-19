@@ -5,7 +5,8 @@
 - [ ] **CPU and heap ceilings** - only the wall clock limit is enforced, so a
       worker spinning in a loop still holds its thread
 - [ ] **Binary-safe bodies** - request and response bodies go through JS as lossy
-      UTF-8 strings, which corrupts any non-text payload
+      UTF-8 strings, which corrupts any non-text payload, so `formData()` refuses
+      `multipart/form-data` rather than hand back a mangled upload
 
 ## Medium Priority
 
@@ -28,6 +29,8 @@
       else is automated
 - [ ] **Outbound `Accept-Language`** - `boa_runtime`'s fetch adds `en-US` to every
       request that does not carry one
+- [ ] **AbortSignal listener options** - `boa_runtime`'s `addEventListener` takes
+      no options argument, so `{ once: true }` is dropped
 
 ## Won't Do (N/A for Boa)
 

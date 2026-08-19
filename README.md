@@ -56,7 +56,8 @@ Pass a real `OperationsHandler` through `Worker::new_with_ops` to serve
 - **ES modules** - only `addEventListener`, not `export default { fetch }`
 - **Streaming bodies** - `RequestBody::Stream` and `ResponseBody::Stream` are not read
 - **`event.waitUntil`** - the fetch event has no `waitUntil`
-- **Binary bodies** - request and response bodies round-trip as lossy UTF-8
+- **Binary bodies** - request and response bodies round-trip as lossy UTF-8, so
+  `formData()` reads `application/x-www-form-urlencoded` and rejects multipart
 - **Snapshots** - Boa has no equivalent of the V8 startup snapshot
 
 ## Testing
@@ -75,6 +76,19 @@ cargo run --release --features ssr-bench --example ssr_bench
 
 The output is byte-identical to the same fixture rendered on V8
 (sha256 `2ccbe4f9d1c98441dbe07ee2307597719adbcfbe5e181aa9a03fcd5d572a584c`).
+
+## Conformance
+
+Runs the 17 SvelteKit scenarios of `openworkers-conformance` and diffs status,
+headers in emission order and body bytes against the responses recorded on
+`openworkers-runtime-v8`:
+
+```bash
+cargo run --release --features conformance --example conformance
+```
+
+16 of 17 match byte for byte. `urlencoded-plus` differs on purpose: the
+urlencoded parser decodes `+` to a space, which the recorded oracle does not.
 
 ## Status
 
