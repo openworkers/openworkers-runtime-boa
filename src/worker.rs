@@ -1118,8 +1118,8 @@ fn setup_response_extractors(context: &mut Context) -> Result<(), boa_engine::Js
         r#"
         globalThis.__extractHeaders = function(headers) {
             var result = [];
-            if (headers && headers._map) {
-                headers._map.forEach(function(value, key) {
+            if (headers && typeof headers.forEach === 'function') {
+                headers.forEach(function(value, key) {
                     result.push(key);
                     result.push(String(value));
                 });

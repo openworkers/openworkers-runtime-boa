@@ -475,3 +475,41 @@ async fn test_script_dropping_the_dispatch_helper_is_an_error() {
 
     assert!(worker.exec(event).await.is_err());
 }
+
+#[tokio::test]
+async fn test_set_cookie_headers_stay_separate() {
+    let code = r#"
+addEventListener("fetch", (event) => {
+    const headers = new Headers();
+    headers.append("set-cookie", "a=1; Path=/");
+    headers.append("set-cookie", "b=2; Path=/");
+    headers.append("link", "<x>");
+    headers.append("link", "<y>");
+    event.respondWith(new Response("", { headers }));
+});
+    "#;
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let req = HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    };
+
+    let (event, rx) = Event::fetch(req);
+    worker.exec(event).await.unwrap();
+
+    let response = rx.await.unwrap();
+
+    assert_eq!(
+        response.headers,
+        vec![
+            ("set-cookie".to_string(), "a=1; Path=/".to_string()),
+            ("set-cookie".to_string(), "b=2; Path=/".to_string()),
+            ("link".to_string(), "<x>, <y>".to_string()),
+        ]
+    );
+}

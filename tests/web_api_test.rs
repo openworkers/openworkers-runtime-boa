@@ -83,3 +83,36 @@ async fn test_aborted_signal_rejects_fetch() {
 
     assert_eq!(out, "AbortError");
 }
+
+#[tokio::test]
+async fn test_headers_join_repeats_but_not_set_cookie() {
+    let out = eval(
+        "const h = new Headers();
+         h.append('link', '<a>');
+         h.append('link', '<b>');
+         h.append('set-cookie', 'a=1');
+         h.append('set-cookie', 'b=2');
+         return [h.get('link'), h.get('set-cookie'), JSON.stringify([...h])].join('|');",
+    )
+    .await;
+
+    assert_eq!(
+        out,
+        "<a>, <b>|a=1, b=2|[[\"link\",\"<a>, <b>\"],[\"set-cookie\",\"a=1\"],[\"set-cookie\",\"b=2\"]]"
+    );
+}
+
+#[tokio::test]
+async fn test_headers_get_set_cookie_lists_every_cookie() {
+    let out = eval(
+        "const h = new Headers();
+         h.append('set-cookie', 'a=1');
+         h.append('set-cookie', 'b=2');
+         const copy = new Headers(h);
+         copy.set('set-cookie', 'c=3');
+         return [JSON.stringify(h.getSetCookie()), JSON.stringify(copy.getSetCookie())].join('|');",
+    )
+    .await;
+
+    assert_eq!(out, "[\"a=1\",\"b=2\"]|[\"c=3\"]");
+}

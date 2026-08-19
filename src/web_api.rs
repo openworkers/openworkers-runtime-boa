@@ -416,11 +416,7 @@ fn setup_headers(context: &mut Context) -> Result<(), boa_engine::JsError> {
                 this._map = new Map();
 
                 if (init) {
-                    if (init instanceof Headers) {
-                        for (const [key, value] of init) {
-                            this._map.set(key, value);
-                        }
-                    } else if (Array.isArray(init)) {
+                    if (init instanceof Headers || Array.isArray(init)) {
                         for (const [key, value] of init) {
                             this.append(key, value);
                         }
@@ -438,11 +434,12 @@ fn setup_headers(context: &mut Context) -> Result<(), boa_engine::JsError> {
 
             append(name, value) {
                 const key = this._normalizeKey(name);
-                const strValue = String(value);
-                if (this._map.has(key)) {
-                    this._map.set(key, this._map.get(key) + ', ' + strValue);
+                const values = this._map.get(key);
+
+                if (values) {
+                    values.push(String(value));
                 } else {
-                    this._map.set(key, strValue);
+                    this._map.set(key, [String(value)]);
                 }
             }
 
@@ -451,8 +448,8 @@ fn setup_headers(context: &mut Context) -> Result<(), boa_engine::JsError> {
             }
 
             get(name) {
-                const value = this._map.get(this._normalizeKey(name));
-                return value !== undefined ? value : null;
+                const values = this._map.get(this._normalizeKey(name));
+                return values ? values.join(', ') : null;
             }
 
             has(name) {
@@ -460,23 +457,30 @@ fn setup_headers(context: &mut Context) -> Result<(), boa_engine::JsError> {
             }
 
             set(name, value) {
-                this._map.set(this._normalizeKey(name), String(value));
+                this._map.set(this._normalizeKey(name), [String(value)]);
             }
 
+            // set-cookie is the one header a client must not receive joined
             *entries() {
-                yield* this._map.entries();
+                for (const [key, values] of this._map) {
+                    if (key === 'set-cookie') {
+                        for (const value of values) yield [key, value];
+                    } else {
+                        yield [key, values.join(', ')];
+                    }
+                }
             }
 
             *keys() {
-                yield* this._map.keys();
+                for (const [key] of this.entries()) yield key;
             }
 
             *values() {
-                yield* this._map.values();
+                for (const [, value] of this.entries()) yield value;
             }
 
             forEach(callback, thisArg) {
-                for (const [key, value] of this._map) {
+                for (const [key, value] of this.entries()) {
                     callback.call(thisArg, value, key, this);
                 }
             }
@@ -486,12 +490,7 @@ fn setup_headers(context: &mut Context) -> Result<(), boa_engine::JsError> {
             }
 
             getSetCookie() {
-                const cookies = [];
-                const value = this._map.get('set-cookie');
-                if (value) {
-                    cookies.push(value);
-                }
-                return cookies;
+                return (this._map.get('set-cookie') || []).slice();
             }
         };
         "#,
