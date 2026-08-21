@@ -81,8 +81,12 @@ impl Fetcher for OpsFetcher {
             headers.insert(name.as_str().to_string(), joined);
         }
 
+        let method = parts.method.as_str().parse().map_err(
+            |_| js_error!(TypeError: "fetch does not support the {} method", parts.method),
+        )?;
+
         let outbound = HttpRequest {
-            method: parts.method.as_str().parse().unwrap_or_default(),
+            method,
             url: url.clone(),
             headers,
             body: if body.is_empty() {

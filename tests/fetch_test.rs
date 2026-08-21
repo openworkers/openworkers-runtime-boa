@@ -354,3 +354,42 @@ async fn test_fetched_response_can_be_the_answer() {
         r#"{"url":"https://example.com/get","data":"test"}"#
     );
 }
+
+#[tokio::test]
+async fn test_fetch_refuses_a_method_the_host_cannot_send() {
+    let script = r#"
+        addEventListener('fetch', async (event) => {
+            let message = 'no error';
+            try {
+                await fetch('https://example.com/get', { method: 'FOO' });
+            } catch (e) {
+                message = e.name + ': ' + e.message;
+            }
+            event.respondWith(new Response(message));
+        });
+    "#;
+
+    let mut worker = create_worker(script).await;
+
+    let request = HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    };
+
+    let (task, rx) = Event::fetch(request);
+    worker.exec(task).await.expect("Task should execute");
+
+    let response = rx.await.expect("Should receive response");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
+    assert_eq!(
+        String::from_utf8_lossy(&body),
+        "TypeError: fetch does not support the FOO method"
+    );
+}
