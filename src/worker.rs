@@ -239,7 +239,12 @@ impl Worker {
             RequestBody::Bytes(b) if !b.is_empty() => {
                 JsValue::from(JsString::from(String::from_utf8_lossy(b).as_ref()))
             }
-            RequestBody::Bytes(_) | RequestBody::None | RequestBody::Stream(_) => JsValue::null(),
+            RequestBody::Bytes(_) | RequestBody::None => JsValue::null(),
+            RequestBody::Stream(_) => {
+                return Err(TerminationReason::Other(
+                    "Streaming request bodies are not supported".to_string(),
+                ));
+            }
         };
 
         let args = [

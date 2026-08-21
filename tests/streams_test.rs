@@ -359,3 +359,40 @@ async fn test_readable_stream_controller_desired_size() {
     // desiredSize: 1 (empty), 0 (1 item), 0 (2 items, clamped)
     assert_eq!(String::from_utf8_lossy(&body_bytes), "1,0,0");
 }
+
+#[tokio::test]
+async fn test_streaming_request_body_is_rejected() {
+    let code = r#"
+        addEventListener('fetch', (event) => {
+            event.respondWith(new Response('unreachable'));
+        });
+    "#;
+
+    let script = Script::new(code);
+    let mut worker = Worker::new(script, None).await.unwrap();
+
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    tx.send(Ok(bytes::Bytes::from_static(b"chunk")))
+        .await
+        .unwrap();
+    drop(tx);
+
+    let req = HttpRequest {
+        method: HttpMethod::Post,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::Stream(rx),
+    };
+
+    let (event, _res_rx) = Event::fetch(req);
+    let err = worker
+        .exec(event)
+        .await
+        .expect_err("should refuse a stream");
+
+    assert!(
+        err.to_string().contains("Streaming request bodies"),
+        "unexpected error: {}",
+        err
+    );
+}
