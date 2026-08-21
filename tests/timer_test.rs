@@ -16,7 +16,14 @@ async fn get(worker: &mut Worker, url: &str) -> String {
     let (event, rx) = Event::fetch(req);
     worker.exec(event).await.unwrap();
 
-    let body = rx.await.unwrap().body.collect().await.unwrap_or_default();
+    let body = rx
+        .await
+        .unwrap()
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap_or_default();
     String::from_utf8_lossy(&body).into_owned()
 }
 
@@ -52,7 +59,12 @@ async fn test_settimeout_basic() {
     worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
-    let body = response.body.collect().await.unwrap();
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     assert_eq!(String::from_utf8_lossy(&body), "after");
 }
 
@@ -91,7 +103,12 @@ async fn test_settimeout_zero_delay() {
     worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
-    let body = response.body.collect().await.unwrap();
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     let body_str = String::from_utf8_lossy(&body);
     assert!(body_str.contains("timeout"), "Got: {}", body_str);
     assert!(body_str.contains("done"), "Got: {}", body_str);
@@ -129,7 +146,12 @@ async fn test_clear_timeout() {
     worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
-    let body = response.body.collect().await.unwrap();
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     assert_eq!(String::from_utf8_lossy(&body), "fired: false");
 }
 
@@ -162,7 +184,12 @@ async fn test_settimeout_with_args() {
     worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
-    let body = response.body.collect().await.unwrap();
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     assert_eq!(String::from_utf8_lossy(&body), "hello:world");
 }
 

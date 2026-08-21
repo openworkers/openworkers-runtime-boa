@@ -19,7 +19,12 @@ async fn respond(code: &str) -> (u16, String) {
 
     let response = rx.await.expect("should receive response");
     let status = response.status;
-    let body = response.body.collect().await.unwrap_or_default();
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap_or_default();
 
     (status, String::from_utf8_lossy(&body).into_owned())
 }

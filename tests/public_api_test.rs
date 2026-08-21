@@ -50,7 +50,12 @@ async fn worker_runs_through_crate_reexports() {
     let response = rx.await.expect("Should receive response");
     assert_eq!(response.status, 200);
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     assert_eq!(String::from_utf8_lossy(&body), "upstream");
 }
 

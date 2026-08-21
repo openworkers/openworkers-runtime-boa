@@ -94,7 +94,12 @@ async fn test_fetch_basic_get() {
     let response = rx.await.expect("Should receive response");
     assert_eq!(response.status, 200);
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
     assert_eq!(json["status"], 200);
     assert_eq!(json["hasUrl"], true);
@@ -132,7 +137,12 @@ async fn test_fetch_post_with_body() {
     let response = rx.await.expect("Should receive response");
     assert_eq!(response.status, 200);
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
     assert_eq!(json["status"], 200);
     assert_eq!(json["receivedData"]["hello"], "world");
@@ -168,7 +178,12 @@ async fn test_fetch_with_headers() {
     let response = rx.await.expect("Should receive response");
     assert_eq!(response.status, 200);
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
     assert_eq!(json["customHeader"], "test-value");
 }
@@ -201,7 +216,12 @@ async fn test_fetch_404() {
 
     let response = rx.await.expect("Should receive response");
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
     assert_eq!(json["status"], 404);
     assert_eq!(json["ok"], false);
@@ -233,7 +253,12 @@ async fn test_fetch_response_with_quotes_and_newlines() {
     worker.exec(task).await.expect("Task should execute");
 
     let response = rx.await.expect("Should receive response");
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
     assert_eq!(json["text"], "line1\nline2 'q' \"d\" back\\slash");
     assert_eq!(json["note"], "it's \"quoted\"");
@@ -282,7 +307,12 @@ async fn test_fetch_waits_for_a_slow_handler() {
     worker.exec(task).await.expect("Task should execute");
 
     let response = rx.await.expect("Should receive response");
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     assert_eq!(String::from_utf8_lossy(&body), "slow,slow");
 }
 
@@ -313,7 +343,12 @@ async fn test_fetched_response_can_be_the_answer() {
         vec![("content-type".to_string(), "application/json".to_string())]
     );
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     assert_eq!(
         String::from_utf8_lossy(&body),
         r#"{"url":"https://example.com/get","data":"test"}"#

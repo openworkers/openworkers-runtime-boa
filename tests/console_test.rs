@@ -34,7 +34,12 @@ async fn run(script: &str) -> (Vec<(LogLevel, String)>, u16, String) {
     worker.exec(task).await.expect("task should execute");
 
     let response = rx.await.expect("should receive response");
-    let body = response.body.collect().await.unwrap_or_default();
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap_or_default();
     let logs = ops.logs.lock().unwrap().clone();
 
     (

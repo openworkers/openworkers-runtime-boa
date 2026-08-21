@@ -179,7 +179,7 @@ impl Worker {
                 })?;
 
                 let scheduled_time = match &init.source {
-                    Some(openworkers_core::TaskSource::Schedule { time }) => *time,
+                    Some(openworkers_core::TaskSource::Schedule { time, .. }) => *time,
                     _ => 0,
                 };
 

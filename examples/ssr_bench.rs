@@ -56,7 +56,12 @@ async fn render(worker: &mut Worker, url: &str) -> Rendered {
     let response = rx.await.expect("no response sent");
     let status = response.status;
     let headers = response.headers.clone();
-    let body = response.body.collect().await.unwrap_or_default();
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap_or_default();
 
     Rendered {
         status,

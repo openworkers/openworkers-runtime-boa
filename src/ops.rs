@@ -104,7 +104,12 @@ impl Fetcher for OpsFetcher {
             builder = builder.header(name, value);
         }
 
-        let body = response.body.collect().await.unwrap_or_default();
+        let body = response
+            .body
+            .collect()
+            .await
+            .map_err(|e| js_error!(TypeError: "fetch failed to read the body: {}", e))?
+            .unwrap_or_default();
 
         builder
             .body(body.to_vec())

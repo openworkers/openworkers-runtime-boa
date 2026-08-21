@@ -39,7 +39,12 @@ async fn bench_local_stream(chunk_count: usize, chunk_size: usize) -> (Duration,
     worker.exec(event).await.unwrap();
     let response = rx.await.unwrap();
 
-    let total_bytes = response.body.collect().await.map(|b| b.len()).unwrap_or(0);
+    let total_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("read body")
+        .map_or(0, |b| b.len());
 
     let elapsed = start.elapsed();
     (elapsed, total_bytes)

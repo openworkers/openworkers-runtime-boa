@@ -30,7 +30,16 @@ async fn test_large_body() {
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
-    assert_eq!(response.body.collect().await.unwrap().len(), 10000);
+    assert_eq!(
+        response
+            .body
+            .collect()
+            .await
+            .expect("Should read body")
+            .unwrap()
+            .len(),
+        10000
+    );
 }
 
 #[tokio::test]
@@ -83,7 +92,12 @@ async fn test_promise_response() {
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
-    let body_bytes = response.body.collect().await.unwrap();
+    let body_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     assert_eq!(String::from_utf8_lossy(&body_bytes), "Promise Response");
 }
 
@@ -112,7 +126,12 @@ addEventListener("fetch", (event) => {
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
-    let body_bytes = response.body.collect().await.unwrap();
+    let body_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&body_bytes),
         "Path: /test/path, Host: example.com"
@@ -150,7 +169,12 @@ async function handleRequest() {
 
     let response = rx.await.unwrap();
     assert_eq!(response.status, 500);
-    let body_bytes = response.body.collect().await.unwrap();
+    let body_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     assert_eq!(String::from_utf8_lossy(&body_bytes), "Test error");
 }
 
@@ -180,7 +204,12 @@ addEventListener("fetch", async (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body_bytes = response.body.collect().await.unwrap();
+    let body_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     let body = String::from_utf8_lossy(&body_bytes);
     assert_eq!(body, "fetch available: true");
 }
@@ -218,7 +247,12 @@ addEventListener("fetch", (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body_bytes = response.body.collect().await.unwrap();
+    let body_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     let body = String::from_utf8_lossy(&body_bytes);
     assert!(body.contains("Bearer token123"));
     assert!(body.contains("application/json"));
@@ -250,7 +284,12 @@ addEventListener("fetch", (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body_bytes = response.body.collect().await.unwrap();
+    let body_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     let body = String::from_utf8_lossy(&body_bytes);
     assert!(body.contains("Method: POST"));
     assert!(body.contains("URL: http://example.com/api/users"));
@@ -324,7 +363,12 @@ addEventListener("fetch", async (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body_bytes = response.body.collect().await.unwrap();
+    let body_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     let body = String::from_utf8_lossy(&body_bytes);
     assert_eq!(body, "Body: Hello from request body");
 }
@@ -354,7 +398,12 @@ addEventListener("fetch", async (event) => {
     let response = rx.await.unwrap();
     assert_eq!(response.status, 200);
 
-    let body_bytes = response.body.collect().await.unwrap();
+    let body_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     let body = String::from_utf8_lossy(&body_bytes);
     assert_eq!(body, "Name: Alice, Age: 30");
 }
@@ -383,7 +432,12 @@ addEventListener("fetch", async (event) => {
     worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
-    let body_bytes = response.body.collect().await.unwrap();
+    let body_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     let body = String::from_utf8_lossy(&body_bytes);
     assert_eq!(body, "Empty: true");
 }
@@ -413,7 +467,12 @@ async fn test_request_body_with_quotes_and_newlines() {
     worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
-    let body_bytes = response.body.collect().await.unwrap();
+    let body_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     assert_eq!(String::from_utf8_lossy(&body_bytes), payload);
 }
 
@@ -447,7 +506,12 @@ async fn test_request_url_and_headers_with_quotes() {
     worker.exec(event).await.unwrap();
 
     let response = rx.await.unwrap();
-    let body_bytes = response.body.collect().await.unwrap();
+    let body_bytes = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&body_bytes),
         format!("{}|{}", url, note)

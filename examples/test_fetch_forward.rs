@@ -51,7 +51,9 @@ async function handleRequest(request) {
             Ok(Ok(response)) => {
                 println!("Status: {}", response.status);
 
-                if let Some(body) = response.body.collect().await {
+                let collected = response.body.collect().await.expect("read body");
+
+                if let Some(body) = collected {
                     let body_str = String::from_utf8_lossy(&body);
                     println!("Body length: {}", body_str.len());
                     println!("Body preview: {}", &body_str[..body_str.len().min(100)]);

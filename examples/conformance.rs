@@ -132,7 +132,12 @@ async fn dispatch(
     worker.exec(task).await.expect("exec failed");
 
     let res = rx.await.expect("no response");
-    let body = res.body.collect().await.unwrap_or_default();
+    let body = res
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap_or_default();
 
     let headers = res
         .headers

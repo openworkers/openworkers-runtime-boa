@@ -37,7 +37,12 @@ pub async fn eval(body: &str) -> String {
     worker.exec(task).await.expect("task should execute");
 
     let response = rx.await.expect("should receive response");
-    let body = response.body.collect().await.expect("should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("should read body")
+        .expect("should have body");
 
     String::from_utf8_lossy(&body).into_owned()
 }

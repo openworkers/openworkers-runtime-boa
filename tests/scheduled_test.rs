@@ -103,6 +103,13 @@ async fn test_removed_scheduled_handler_does_not_run() {
     let (event, rx) = Event::fetch(req);
     worker.exec(event).await.unwrap();
 
-    let body = rx.await.unwrap().body.collect().await.unwrap();
+    let body = rx
+        .await
+        .unwrap()
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .unwrap();
     assert_eq!(String::from_utf8_lossy(&body), "10");
 }

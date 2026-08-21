@@ -35,7 +35,12 @@ async fn test_crypto_random_uuid() {
     let response = rx.await.expect("Should receive response");
     assert_eq!(response.status, 200);
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
     assert_eq!(json["isValid"], true);
     assert_eq!(json["length"], 36);
@@ -86,7 +91,12 @@ async fn test_crypto_get_random_values() {
     let response = rx.await.expect("Should receive response");
     assert_eq!(response.status, 200);
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
     assert_eq!(json["allZerosBefore"], true);
     assert_eq!(json["sameArray"], true);
@@ -134,7 +144,12 @@ async fn test_crypto_subtle_digest_sha256() {
     let response = rx.await.expect("Should receive response");
     assert_eq!(response.status, 200);
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
     assert_eq!(json["matches"], true);
     assert_eq!(json["length"], 32); // SHA-256 is 32 bytes
@@ -180,7 +195,12 @@ async fn test_crypto_subtle_digest_sha1() {
     let response = rx.await.expect("Should receive response");
     assert_eq!(response.status, 200);
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
     assert_eq!(json["matches"], true);
     assert_eq!(json["length"], 20); // SHA-1 is 20 bytes
@@ -223,7 +243,12 @@ async fn test_crypto_subtle_digest_sha512() {
     let response = rx.await.expect("Should receive response");
     assert_eq!(response.status, 200);
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("Should read body")
+        .expect("Should have body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("Should be valid JSON");
     assert_eq!(json["length"], 64); // SHA-512 is 64 bytes
 }
