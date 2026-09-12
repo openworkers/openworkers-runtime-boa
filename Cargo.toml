@@ -31,7 +31,10 @@ bytes = { version = "1.11", features = ["serde"] }
 http = "1"
 
 # Crypto
-ring = "0.17"
+# Pure Rust, so the runtime keeps the memory model boa gives it
+getrandom = "0.4"
+sha1 = "0.10"
+sha2 = "0.10"
 uuid = { version = "1.17", features = ["v4"] }
 
 # Optional dependencies for examples/integration

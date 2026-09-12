@@ -82,8 +82,9 @@ fn report(label: &str, mut samples: Vec<Duration>) {
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
+    use sha2::Digest;
+
+    sha2::Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{:02x}", b))
         .collect()

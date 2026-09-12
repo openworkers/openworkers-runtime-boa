@@ -465,7 +465,11 @@ impl Worker {
 }
 
 fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
-    use ring::{digest, rand};
+    use sha1::Sha1;
+    use sha2::Digest;
+    use sha2::Sha256;
+    use sha2::Sha384;
+    use sha2::Sha512;
 
     let crypto = boa_engine::object::ObjectInitializer::new(context)
         .function(
@@ -484,11 +488,10 @@ fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
                     && let Ok(ab) =
                         boa_engine::object::builtins::JsArrayBuffer::from_object(buffer_obj.clone())
                 {
-                    let rng = rand::SystemRandom::new();
                     let len = ab.data().map(|d| d.len()).unwrap_or(0);
                     let mut bytes = vec![0u8; len];
 
-                    if rand::SecureRandom::fill(&rng, &mut bytes).is_ok()
+                    if getrandom::fill(&mut bytes).is_ok()
                         && let Some(mut data) = ab.data_mut()
                     {
                         data.copy_from_slice(&bytes);
@@ -522,11 +525,11 @@ fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
                     data = bytes.to_vec();
                 }
 
-                let algorithm = match algo.to_uppercase().as_str() {
-                    "SHA-1" => &digest::SHA1_FOR_LEGACY_USE_ONLY,
-                    "SHA-256" => &digest::SHA256,
-                    "SHA-384" => &digest::SHA384,
-                    "SHA-512" => &digest::SHA512,
+                let hash: Vec<u8> = match algo.to_uppercase().as_str() {
+                    "SHA-1" => Sha1::digest(&data).to_vec(),
+                    "SHA-256" => Sha256::digest(&data).to_vec(),
+                    "SHA-384" => Sha384::digest(&data).to_vec(),
+                    "SHA-512" => Sha512::digest(&data).to_vec(),
                     _ => {
                         return Err(boa_engine::JsNativeError::error()
                             .with_message(format!("Unsupported algorithm: {}", algo))
@@ -534,12 +537,7 @@ fn setup_crypto(context: &mut Context) -> Result<(), boa_engine::JsError> {
                     }
                 };
 
-                let result = digest::digest(algorithm, &data);
-                let hex: String = result
-                    .as_ref()
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect();
+                let hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
 
                 Ok(JsValue::from(boa_engine::JsString::from(hex)))
             }),

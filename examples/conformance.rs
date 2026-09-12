@@ -97,8 +97,9 @@ impl OperationsHandler for Ops {
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
+    use sha2::Digest;
+
+    sha2::Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
