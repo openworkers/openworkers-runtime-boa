@@ -15,6 +15,9 @@ ssr-bench = ["dep:openworkers-transform"]
 # The shared web surface
 # openworkers-wintertc = { path = "../openworkers-wintertc" }
 openworkers-wintertc = { git = "https://github.com/openworkers/openworkers-wintertc", tag = "v0.1.6" }
+
+# The WHATWG Encoding Standard, so TextDecoder answers for every label
+encoding_rs = "0.8"
 openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.15.0", features = ["hyper"] }
 
 # Boa JavaScript engine (main, no release carries the fixes this runtime needs)

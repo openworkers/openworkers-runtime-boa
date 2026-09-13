@@ -10,13 +10,34 @@ use boa_engine::JsError;
 use boa_engine::JsValue;
 use boa_engine::NativeFunction;
 use boa_engine::Source;
+use boa_engine::js_error;
 use boa_engine::js_string;
 use boa_engine::object::ObjectInitializer;
+use boa_engine::object::builtins::JsUint8Array;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 /// Ops this runtime answers on the native namespace.
-pub const PROVIDED_OPS: &[&str] = &["performanceNow", "timeOrigin", "userAgent"];
+pub const PROVIDED_OPS: &[&str] = &[
+    "performanceNow",
+    "textDecode",
+    "textEncode",
+    "timeOrigin",
+    "userAgent",
+];
+
+/// The bytes of a typed array argument, whatever its element type: the surface
+/// hands `textDecode` a `Uint8Array` view, which may sit at an offset into a
+/// larger buffer.
+fn typed_array_bytes(value: &JsValue, context: &mut Context) -> Option<Vec<u8>> {
+    let object = value.as_object()?;
+    let array = JsUint8Array::from_object(object.clone()).ok()?;
+    let length = array.length(context).ok()?;
+
+    (0..length)
+        .map(|at| array.get(at, context).ok()?.to_uint8(context).ok())
+        .collect()
+}
 
 /// What `navigator.userAgent` reports. `Product/Version (comment)` is the HTTP
 /// grammar, so a reader splitting on the slash still finds the version.
@@ -52,6 +73,58 @@ pub fn install_ops(context: &mut Context) -> Result<(), JsError> {
             js_string!("userAgent"),
             js_string!(user_agent()),
             boa_engine::property::Attribute::all(),
+        )
+        .function(
+            NativeFunction::from_copy_closure(|_this, args, ctx| {
+                // An unpaired surrogate encodes as U+FFFD, which is what lossy
+                // does; escaping it would hand back six bytes where the
+                // standard asks for three
+                let text = args
+                    .first()
+                    .cloned()
+                    .unwrap_or_default()
+                    .to_string(ctx)?
+                    .to_std_string_lossy();
+
+                JsUint8Array::from_iter(text.into_bytes(), ctx).map(JsValue::from)
+            }),
+            js_string!("textEncode"),
+            1,
+        )
+        .function(
+            NativeFunction::from_copy_closure(|_this, args, ctx| {
+                let bytes = args
+                    .first()
+                    .and_then(|value| typed_array_bytes(value, ctx))
+                    .unwrap_or_default();
+
+                let label = match args.get(1) {
+                    Some(value) if !value.is_undefined() => {
+                        value.to_string(ctx)?.to_std_string_escaped()
+                    }
+                    _ => "utf-8".to_string(),
+                };
+
+                // An unknown label fails here rather than on the first decode,
+                // which is where the standard puts it: in the constructor
+                let Some(encoding) = encoding_rs::Encoding::for_label(label.as_bytes()) else {
+                    return Err(js_error!(RangeError: "unsupported encoding: {label}"));
+                };
+
+                let fatal = args.get(2).is_some_and(JsValue::to_boolean);
+
+                let text = if fatal {
+                    encoding
+                        .decode_without_bom_handling_and_without_replacement(&bytes)
+                        .ok_or_else(|| js_error!(TypeError: "the encoded data was not valid"))?
+                } else {
+                    encoding.decode_without_bom_handling(&bytes).0
+                };
+
+                Ok(JsValue::from(js_string!(text.as_ref())))
+            }),
+            js_string!("textDecode"),
+            3,
         )
         .build();
 
