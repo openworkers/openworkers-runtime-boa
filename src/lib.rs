@@ -1,3 +1,4 @@
+mod bindings;
 mod jobs;
 mod ops;
 pub mod snapshot;
@@ -14,3 +15,6 @@ pub use openworkers_core::{
     OperationsHandler, RequestBody, ResponseBody, ResponseSender, RuntimeLimits, Script, TaskInit,
     TaskResult, TaskSource, TerminationReason, Worker as WorkerTrait,
 };
+
+/// Binding types this runtime serves, for the runner to check against.
+pub use bindings::SUPPORTED as SUPPORTED_BINDINGS;

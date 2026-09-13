@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::bindings;
 use crate::jobs::{Stop, WorkerJobs};
 use crate::ops::{OpsFetcher, OpsLogger};
 use crate::surface;
@@ -126,6 +127,10 @@ impl Worker {
                 "Failed to register event handling: {}",
                 e
             ))
+        })?;
+
+        bindings::install(&mut context, &ops, &script.env, &script.bindings).map_err(|e| {
+            TerminationReason::InitializationError(format!("Failed to install env: {}", e))
         })?;
 
         setup_response_extractors(&mut context).map_err(|e| {

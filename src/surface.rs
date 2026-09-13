@@ -110,7 +110,7 @@ pub fn install_ops(context: &mut Context) -> Result<(), JsError> {
                 // An unknown label fails here rather than on the first decode,
                 // which is where the standard puts it: in the constructor
                 let Some(encoding) = encoding_rs::Encoding::for_label(label.as_bytes()) else {
-                    return Err(js_error!(RangeError: "unsupported encoding: {label}"));
+                    return Err(js_error!(RangeError: "unsupported encoding: {}", label));
                 };
 
                 let fatal = args.get(2).is_some_and(JsValue::to_boolean);
