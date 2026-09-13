@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runtime-boa"
-version = "0.15.1"
+version = "0.15.2"
 edition = "2024"
 
 [features]
@@ -33,8 +33,8 @@ http = "1"
 # Crypto
 # Pure Rust, so the runtime keeps the memory model boa gives it
 getrandom = "0.4"
-sha1 = "0.10"
-sha2 = "0.10"
+sha1 = "0.11"
+sha2 = "0.11"
 uuid = { version = "1.17", features = ["v4"] }
 
 # Optional dependencies for examples/integration
