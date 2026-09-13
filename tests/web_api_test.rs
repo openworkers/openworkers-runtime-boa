@@ -134,14 +134,17 @@ async fn test_request_form_data_decodes_urlencoded() {
 }
 
 #[tokio::test]
-async fn test_form_data_refuses_multipart() {
+async fn test_form_data_round_trips_through_multipart() {
     let out = eval(
-        "const r = new Response('x', {
-             headers: { 'content-type': 'multipart/form-data; boundary=abc' }
-         });
-         return await r.formData();",
+        "const form = new FormData();
+         form.append('name', 'Jo Ann');
+         form.append('tag', 'a');
+         form.append('tag', 'b');
+
+         const back = await new Response(form).formData();
+         return [back.get('name'), back.getAll('tag').join(',')].join('|');",
     )
     .await;
 
-    assert!(out.starts_with("threw TypeError"), "{}", out);
+    assert_eq!(out, "Jo Ann|a,b");
 }

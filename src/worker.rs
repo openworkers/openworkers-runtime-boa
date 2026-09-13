@@ -1093,6 +1093,13 @@ fn setup_fetch_shim(context: &mut Context) -> Result<(), boa_engine::JsError> {
             globalThis.fetch = async function(input, init) {
                 init = init || {};
 
+                // The standard aborts before anything is sent, and the native
+                // fetch cannot see a signal the shared surface defines
+                if (init.signal && init.signal.aborted) {
+                    throw init.signal.reason
+                        || new DOMException('The operation was aborted.', 'AbortError');
+                }
+
                 var request = typeof input === 'string' ? null : input;
                 var options = { headers: plainHeaders(init.headers, request) };
                 var method = init.method || (request && request.method);
