@@ -7,10 +7,60 @@
 
 use boa_engine::Context;
 use boa_engine::JsError;
+use boa_engine::JsValue;
+use boa_engine::NativeFunction;
 use boa_engine::Source;
+use boa_engine::js_string;
+use boa_engine::object::ObjectInitializer;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 /// Ops this runtime answers on the native namespace.
-pub const PROVIDED_OPS: &[&str] = &[];
+pub const PROVIDED_OPS: &[&str] = &["performanceNow", "timeOrigin", "userAgent"];
+
+/// What `navigator.userAgent` reports. `Product/Version (comment)` is the HTTP
+/// grammar, so a reader splitting on the slash still finds the version.
+fn user_agent() -> String {
+    format!("OpenWorkers/{} (boa)", env!("CARGO_PKG_VERSION"))
+}
+
+/// Install the native namespace the surface reads its ops from. Call before
+/// [`install`], and never capture an op: a module reads it at call time.
+pub fn install_ops(context: &mut Context) -> Result<(), JsError> {
+    // The wall clock when this worker started, which is what `now` counts from
+    let origin = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs_f64() * 1_000.0)
+        .unwrap_or(0.0);
+
+    let started = std::time::Instant::now();
+
+    let ops = ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_copy_closure(move |_this, _args, _ctx| {
+                Ok(JsValue::from(started.elapsed().as_secs_f64() * 1_000.0))
+            }),
+            js_string!("performanceNow"),
+            0,
+        )
+        .property(
+            js_string!("timeOrigin"),
+            origin,
+            boa_engine::property::Attribute::all(),
+        )
+        .property(
+            js_string!("userAgent"),
+            js_string!(user_agent()),
+            boa_engine::property::Attribute::all(),
+        )
+        .build();
+
+    context.register_global_property(
+        js_string!(openworkers_wintertc::NATIVE_NAMESPACE),
+        ops,
+        boa_engine::property::Attribute::all(),
+    )
+}
 
 /// Modules whose every op this runtime answers, in the order the surface
 /// declares: a module patches what the one before it defined.

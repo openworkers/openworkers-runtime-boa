@@ -107,6 +107,10 @@ impl Worker {
             TerminationReason::InitializationError(format!("Failed to register web APIs: {}", e))
         })?;
 
+        surface::install_ops(&mut context).map_err(|e| {
+            TerminationReason::InitializationError(format!("Failed to install the ops: {}", e))
+        })?;
+
         // The shared surface lands after this crate's own classes so that what
         // it defines wins where the two overlap
         surface::install(&mut context).map_err(|e| {
