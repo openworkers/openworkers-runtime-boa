@@ -1981,6 +1981,7 @@ dependencies = [
  "http 1.5.0",
  "openworkers-core",
  "openworkers-transform",
+ "openworkers-wintertc",
  "serde",
  "serde_json",
  "sha1 0.11.0",
@@ -2002,6 +2003,11 @@ dependencies = [
  "swc_ecma_transforms_typescript",
  "swc_ecma_visit",
 ]
+
+[[package]]
+name = "openworkers-wintertc"
+version = "0.1.6"
+source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.6#e7825c2b8be933d54d206197822be00ee65e345f"
 
 [[package]]
 name = "par-core"

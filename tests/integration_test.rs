@@ -489,6 +489,10 @@ async fn test_request_url_and_headers_with_quotes() {
     let url = "http://localhost/it's?q=a'b";
     let note = "he said \"hi\"";
 
+    // An apostrophe in the query of a special scheme percent-encodes, so the
+    // url the guest reads is the parsed one, not the bytes the host sent
+    let seen = "http://localhost/it's?q=a%27b";
+
     let script = Script::new(code);
     let mut worker = Worker::new(script, None).await.unwrap();
 
@@ -514,7 +518,7 @@ async fn test_request_url_and_headers_with_quotes() {
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&body_bytes),
-        format!("{}|{}", url, note)
+        format!("{}|{}", seen, note)
     );
 }
 
@@ -571,9 +575,14 @@ addEventListener("fetch", (event) => {
     assert_eq!(
         response.headers,
         vec![
+            // Headers iterate sorted by name, and a string body is typed
+            (
+                "content-type".to_string(),
+                "text/plain;charset=UTF-8".to_string()
+            ),
+            ("link".to_string(), "<x>, <y>".to_string()),
             ("set-cookie".to_string(), "a=1; Path=/".to_string()),
             ("set-cookie".to_string(), "b=2; Path=/".to_string()),
-            ("link".to_string(), "<x>, <y>".to_string()),
         ]
     );
 }

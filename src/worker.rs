@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use crate::jobs::{Stop, WorkerJobs};
 use crate::ops::{OpsFetcher, OpsLogger};
+use crate::surface;
 use crate::web_api::setup_web_apis;
 
 /// Fetch handlers are kept in a JS array instead, because the dispatch loop
@@ -104,6 +105,12 @@ impl Worker {
 
         setup_web_apis(&mut context).map_err(|e| {
             TerminationReason::InitializationError(format!("Failed to register web APIs: {}", e))
+        })?;
+
+        // The shared surface lands after this crate's own classes so that what
+        // it defines wins where the two overlap
+        surface::install(&mut context).map_err(|e| {
+            TerminationReason::InitializationError(format!("Failed to install the surface: {}", e))
         })?;
 
         setup_fetch_shim(&mut context).map_err(|e| {
