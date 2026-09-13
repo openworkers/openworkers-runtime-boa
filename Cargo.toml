@@ -18,6 +18,8 @@ openworkers-wintertc = { git = "https://github.com/openworkers/openworkers-winte
 
 # The WHATWG Encoding Standard, so TextDecoder answers for every label
 encoding_rs = "0.8"
+# The WHATWG URL parser behind the surface's urlParse and urlUpdate ops
+url = "2.5"
 openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.15.0", features = ["hyper"] }
 
 # Boa JavaScript engine (main, no release carries the fixes this runtime needs)

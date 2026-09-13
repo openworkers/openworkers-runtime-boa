@@ -23,6 +23,8 @@ pub const PROVIDED_OPS: &[&str] = &[
     "textDecode",
     "textEncode",
     "timeOrigin",
+    "urlParse",
+    "urlUpdate",
     "userAgent",
 ];
 
@@ -124,6 +126,53 @@ pub fn install_ops(context: &mut Context) -> Result<(), JsError> {
                 Ok(JsValue::from(js_string!(text.as_ref())))
             }),
             js_string!("textDecode"),
+            3,
+        )
+        .function(
+            NativeFunction::from_copy_closure(|_this, args, ctx| {
+                let input = args
+                    .first()
+                    .cloned()
+                    .unwrap_or_default()
+                    .to_string(ctx)?
+                    .to_std_string_escaped();
+
+                let base = match args.get(1) {
+                    Some(value) if !value.is_null_or_undefined() => {
+                        Some(value.to_string(ctx)?.to_std_string_escaped())
+                    }
+                    _ => None,
+                };
+
+                Ok(crate::url::to_js(
+                    crate::url::parse(&input, base.as_deref()),
+                    ctx,
+                ))
+            }),
+            js_string!("urlParse"),
+            2,
+        )
+        .function(
+            NativeFunction::from_copy_closure(|_this, args, ctx| {
+                let mut text = |at: usize| -> boa_engine::JsResult<String> {
+                    Ok(args
+                        .get(at)
+                        .cloned()
+                        .unwrap_or_default()
+                        .to_string(ctx)?
+                        .to_std_string_escaped())
+                };
+
+                let href = text(0)?;
+                let part = text(1)?;
+                let value = text(2)?;
+
+                Ok(crate::url::to_js(
+                    crate::url::update(&href, &part, &value),
+                    ctx,
+                ))
+            }),
+            js_string!("urlUpdate"),
             3,
         )
         .build();

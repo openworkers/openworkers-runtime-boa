@@ -2,6 +2,7 @@ mod jobs;
 mod ops;
 pub mod snapshot;
 mod surface;
+mod url;
 mod web_api;
 mod worker;
 
