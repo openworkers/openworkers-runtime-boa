@@ -20,7 +20,7 @@ openworkers-wintertc = { git = "https://github.com/openworkers/openworkers-winte
 encoding_rs = "0.8"
 # The WHATWG URL parser behind the surface's urlParse and urlUpdate ops
 url = "2.5"
-openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.16.0", features = ["hyper"] }
+openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.16.1", features = ["hyper"] }
 
 # Boa JavaScript engine (main, no release carries the fixes this runtime needs)
 boa_engine = { git = "https://github.com/boa-dev/boa", rev = "93a9e31a83bbaa15bbd8b687e61639ffc53bbef1", package = "boa_engine" }
