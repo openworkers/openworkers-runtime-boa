@@ -1953,8 +1953,8 @@ checksum = "cfe21416a02c693fb9f980befcb230ecc70b0b3d1cc4abf88b9675c4c1457f0c"
 
 [[package]]
 name = "openworkers-core"
-version = "0.17.0"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.17.0#9e0d99e03c1fcf0394afea51cdf1390bfee607f1"
+version = "0.18.0"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.18.0#0182f4104e803ae5f2f15e7f9677c53910f55309"
 dependencies = [
  "actix-web",
  "base64 0.23.1",
