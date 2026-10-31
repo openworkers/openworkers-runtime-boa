@@ -68,7 +68,9 @@ impl WorkerJobs {
         done: &dyn Fn() -> bool,
     ) -> JsResult<Stop> {
         loop {
-            self.run_ready(&mut context.borrow_mut())?;
+            if let Stop::Timeout = self.run_ready(&mut context.borrow_mut(), deadline)? {
+                return Ok(Stop::Timeout);
+            }
 
             if done() {
                 return Ok(Stop::Idle);
@@ -112,9 +114,11 @@ impl WorkerJobs {
     }
 
     /// Runs the microtasks, then the timers that have come due, then whatever
-    /// those timers queued.
-    fn run_ready(&self, context: &mut Context) -> JsResult<()> {
-        self.drain_microtasks(context)?;
+    /// those timers queued. Stops between two jobs when `deadline` has passed.
+    fn run_ready(&self, context: &mut Context, deadline: Option<Instant>) -> JsResult<Stop> {
+        if let Stop::Timeout = self.drain_microtasks(context, deadline)? {
+            return Ok(Stop::Timeout);
+        }
 
         for job in self.due_clock_jobs(context) {
             match job {
@@ -133,11 +137,17 @@ impl WorkerJobs {
             }
         }
 
-        self.drain_microtasks(context)
+        self.drain_microtasks(context, deadline)
     }
 
-    fn drain_microtasks(&self, context: &mut Context) -> JsResult<()> {
+    /// A chain of promises that never ends keeps this queue full, so `deadline`
+    /// is checked between two jobs.
+    fn drain_microtasks(&self, context: &mut Context, deadline: Option<Instant>) -> JsResult<Stop> {
         loop {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Ok(Stop::Timeout);
+            }
+
             let promise = self.promise.borrow_mut().pop_front();
 
             if let Some(job) = promise {
@@ -147,7 +157,7 @@ impl WorkerJobs {
 
             let Some(job) = self.generic.borrow_mut().pop_front() else {
                 context.clear_kept_objects();
-                return Ok(());
+                return Ok(Stop::Idle);
             };
 
             job.call(context)?;
@@ -199,6 +209,6 @@ impl JobExecutor for WorkerJobs {
 
     /// Runs what is ready; waiting on timers and futures needs [`Self::run_until`].
     fn run_jobs(self: Rc<Self>, context: &mut Context) -> JsResult<()> {
-        self.run_ready(context)
+        self.run_ready(context, None).map(|_| ())
     }
 }
