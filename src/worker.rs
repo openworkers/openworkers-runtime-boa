@@ -3,7 +3,7 @@ use boa_engine::{
     builtins::promise::PromiseState,
     context::ContextBuilder,
     js_string,
-    object::builtins::{JsArray, JsFunction, JsPromise},
+    object::builtins::{JsArray, JsArrayBuffer, JsFunction, JsPromise},
     property::Attribute,
 };
 use boa_gc::{Gc, GcRefCell};
@@ -400,29 +400,16 @@ impl Worker {
             }
         }
 
-        // The body is a ReadableStream, so it is drained by a JS helper too
+        // __dispatchFetch drained the body into an ArrayBuffer
         let mut body = ResponseBody::None;
 
         if let Ok(body_val) = resp_obj.get(js_string!("body"), &mut self.context)
-            && body_val.is_object()
-            && let Ok(extractor) = self
-                .context
-                .global_object()
-                .get(js_string!("__extractBody"), &mut self.context)
-            && let Some(extractor_fn) = extractor
-                .as_object()
-                .and_then(|o| JsFunction::from_object(o.clone()))
-            && let Ok(result) =
-                extractor_fn.call(&JsValue::undefined(), &[body_val], &mut self.context)
+            && let Some(buffer) = body_val.as_object()
+            && let Ok(buffer) = JsArrayBuffer::from_object(buffer)
+            && let Some(bytes) = buffer.data()
+            && !bytes.is_empty()
         {
-            let body_str = result
-                .to_string(&mut self.context)
-                .map(|s| s.to_std_string_escaped())
-                .unwrap_or_default();
-
-            if !body_str.is_empty() {
-                body = ResponseBody::Bytes(Bytes::from(body_str));
-            }
+            body = ResponseBody::Bytes(Bytes::copy_from_slice(&bytes));
         }
 
         Ok(HttpResponse {
@@ -1041,10 +1028,26 @@ fn setup_event_handling(context: &mut Context) -> Result<(), boa_engine::JsError
                 }
             }
 
+            // The body is read here, while the event loop runs: a stream with a
+            // pull source has nothing queued until something reads it
+            async function drained(response) {
+                var body = null;
+
+                if (response && response.body && typeof response.arrayBuffer === 'function') {
+                    body = await response.arrayBuffer();
+                }
+
+                return {
+                    status: response ? response.status : 200,
+                    headers: response ? response.headers : null,
+                    body: body,
+                };
+            }
+
             try {
-                return await event._response;
+                return await drained(await event._response);
             } catch (e) {
-                return failed(e);
+                return drained(failed(e));
             }
         };
 
@@ -1137,8 +1140,8 @@ fn setup_fetch_shim(context: &mut Context) -> Result<(), boa_engine::JsError> {
     Ok(())
 }
 
-/// Map iteration and ReadableStream queue reading are awkward through Boa's Rust
-/// API alone, so they are done in JS.
+/// Map iteration is awkward through Boa's Rust API alone, so the headers are
+/// read in JS.
 fn setup_response_extractors(context: &mut Context) -> Result<(), boa_engine::JsError> {
     context.eval(Source::from_bytes(
         r#"
@@ -1151,32 +1154,6 @@ fn setup_response_extractors(context: &mut Context) -> Result<(), boa_engine::Js
                 });
             }
             return result;
-        };
-        "#,
-    ))?;
-
-    context.eval(Source::from_bytes(
-        r#"
-        globalThis.__extractBody = function(stream) {
-            var queue = null;
-            if (stream && stream._controller && stream._controller._queue) {
-                queue = stream._controller._queue;
-            } else if (stream && stream._queue) {
-                queue = stream._queue;
-            }
-            if (!queue) return '';
-            var chunks = [];
-            for (var i = 0; i < queue.length; i++) {
-                var item = queue[i];
-                if (item.type === 'chunk' && item.value) {
-                    if (item.value instanceof Uint8Array) {
-                        chunks.push(new TextDecoder().decode(item.value));
-                    } else {
-                        chunks.push(String(item.value));
-                    }
-                }
-            }
-            return chunks.join('');
         };
         "#,
     ))?;

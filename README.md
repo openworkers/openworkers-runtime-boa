@@ -60,10 +60,13 @@ Pass a real `OperationsHandler` through `Worker::new_with_ops` to serve
   thread
 - **Bindings** - storage, database, D1, worker and Durable Object bindings
 - **ES modules** - only `addEventListener`, not `export default { fetch }`
-- **Streaming bodies** - `RequestBody::Stream` and `ResponseBody::Stream` are not read
+- **Streaming bodies** - `RequestBody::Stream` is refused, and a response body
+  is read to its end before the response goes out, so a stream that never ends
+  runs until the wall-clock limit
 - **`event.waitUntil`** - the fetch event has no `waitUntil`
-- **Binary bodies** - request and response bodies round-trip as lossy UTF-8, so
-  `formData()` reads `application/x-www-form-urlencoded` and rejects multipart
+- **Binary request bodies** - a request body reaches JavaScript as lossy UTF-8,
+  so `formData()` reads `application/x-www-form-urlencoded` and rejects
+  multipart
 - **Snapshots** - Boa has no equivalent of the V8 startup snapshot
 
 ## Testing
