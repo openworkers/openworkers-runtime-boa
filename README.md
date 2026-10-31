@@ -43,6 +43,8 @@ Pass a real `OperationsHandler` through `Worker::new_with_ops` to serve
   TextEncoder/TextDecoder, atob/btoa, structuredClone, queueMicrotask.
   console, timers, `fetch`, AbortController, URL, TextEncoder/TextDecoder,
   atob/btoa and structuredClone come from `boa_runtime`; the rest are ours
+- **Bindings** - `env` carries the variables and the assets, KV and invoke
+  bindings; invoke is behind the `invoke` feature
 - **Logs** - `console` and uncaught handler errors go to the `OperationsHandler`
 - **Request lifetime** - the response goes out as soon as `respondWith` settles,
   and the timers and fetches still pending behind it are dropped
@@ -51,8 +53,12 @@ Pass a real `OperationsHandler` through `Worker::new_with_ops` to serve
 
 ## Not supported
 
-- **CPU and memory limits** - only `max_wall_clock_time_ms` is enforced
-- **Bindings** - `env` and the KV/storage/database/worker bindings are not exposed to JS
+- **CPU and memory limits** - only `max_wall_clock_time_ms` is enforced, and
+  only between jobs. Boa has no interrupt for a running script, only caps on
+  loop iterations per call and on recursion depth, which this runtime does not
+  set. A script that never ends, at the top level or in a handler, keeps its
+  thread
+- **Bindings** - storage, database, D1, worker and Durable Object bindings
 - **ES modules** - only `addEventListener`, not `export default { fetch }`
 - **Streaming bodies** - `RequestBody::Stream` and `ResponseBody::Stream` are not read
 - **`event.waitUntil`** - the fetch event has no `waitUntil`
